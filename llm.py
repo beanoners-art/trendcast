@@ -43,12 +43,15 @@ SYS = """너는 한국어 카드뉴스 에디터다. 주어진 '재료'(위키 �
 def _material_text(m):
     lines = [f"제목: {m.get('title','')}"]
     if m.get("description"): lines.append(f"설명: {m['description']}")
-    if m.get("headline"): lines.append(f"헤드라인: {m['headline']}")
-    if m.get("lead"): lines.append(f"위키 리드:\n{m['lead']}")
+    if m.get("headline"):    lines.append(f"헤드라인: {m['headline']}")
+    if m.get("lead"):        lines.append(f"위키 리드:\n{m['lead']}")
     if m.get("news"):
         lines.append("관련 뉴스:")
         for a in m["news"]:
-            lines.append(f" - [{a.get('date','')[:8]}] {a.get('domain','')}: {a.get('title','')}")
+            line = f" - [{a.get('date','')}] {a.get('domain','')}: {a.get('title','')}"
+            if a.get("body"):
+                line += f"\n   요약: {a['body'][:200]}"
+            lines.append(line)
     return "\n".join(lines)
 
 def _anthropic(material, sensitive):
