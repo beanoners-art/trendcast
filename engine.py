@@ -173,21 +173,79 @@ def tag(c):
     c["sensitive"] = any(k in blob for k in SENSITIVE) or cat == "정치"
     return c
 
+# ---------- 빅이슈 필터 ----------
+BLACKLIST = [
+    "weather","forecast","rain","snow","storm","hurricane","tornado",
+    "flood warning","heat wave","blizzard","soaking","drought",
+    "wordle","connections hint","nyt hint","crossword","puzzle answer",
+    "daily horoscope","lottery","powerball","mega million",
+    "county fair","state fair","traffic","road closure",
+    "training camp","preseason","depth chart","mock draft",
+    "rumor","spotted","dating","breakup","feud","beef",
+    "sale","deal","coupon","discount","black friday",
+    "how to watch","listen and follow","where to watch",
+    "tips","tricks","guide to","tutorial",
+]
+
+def _is_blacklisted(title, headline=""):
+    import re as _re
+    blob = (title + " " + (headline or "")).lower()
+    for kw in BLACKLIST:
+        # 멀티워드 키워드는 부분일치, 단일 단어는 단어경계 적용
+        if " " in kw:
+            if kw in blob:
+                return True
+        else:
+            if _re.search(r"\b" + _re.escape(kw) + r"\b", blob):
+                return True
+    return False
+
+def _claude_bigissue_score(items):
+    """Claude가 빅이슈 점수 0~10 채점. 키 없으면 전부 통과."""
+    import os as _os, json as _json, re as _re2
+    key = _os.environ.get("ANTHROPIC_API_KEY", "")
+    if not key:
+        for c in items: c["big_score"] = 7
+        return items
+    try:
+        from anthropic import Anthropic
+        client = Anthropic(api_key=key)
+        topics = "\n".join(
+            f"{i+1}. {c['title']} | {c.get('headline','')[:80]}"
+            for i, c in enumerate(items)
+        )
+        msg = client.messages.create(
+            model=_os.environ.get("CLAUDE_MODEL","claude-sonnet-4-6"),
+            max_tokens=300,
+            system="""You are a global news editor. Rate each topic 0-10 for international significance.
+Low (0-4): local weather, quiz answers, minor gossip, training schedules, regional events.
+High (7-10): major political events, economic news, viral global controversy, breakthrough tech, significant cultural moments.
+Output ONLY a JSON array of integers. Example: [8,3,9,2,7]""",
+            messages=[{"role":"user","content":f"Rate these:\n{topics}"}]
+        )
+        txt = "".join(b.text for b in msg.content if b.type=="text").strip()
+        txt = _re2.sub(r"^```json|```$","",txt).strip()
+        scores = _json.loads(txt)
+        for i, c in enumerate(items):
+            c["big_score"] = scores[i] if i < len(scores) else 5
+    except Exception as e:
+        print("[bigissue] err", e)
+        for c in items: c["big_score"] = 7
+    return items
+
 # ---------- 점수 조립 ----------
 def score(clusters, category=None):
     for c in clusters:
         tag(c)
-        # 1차 게이트: 트렌드지수 = 정규화 크기 × 속도부스트
         c["trend_index"] = round(c["norm"] * c["vboost"], 1)
-        # 소스교차 확신도
         c["confidence"] = round(1 + 0.5 * (len(c["sources"]) - 1), 2)
-        # 관련성(전체 모드=1.0, 카테고리 필터시 일치=1.0/불일치=0.15)
         rel = 1.0 if not category or category == "전체" else (1.0 if c["category"] == category else 0.15)
         c["relevance"] = rel
-        # 2차 점수
         c["final"] = round(c["trend_index"] * c["confidence"] * rel, 1)
-    # 하락(포화)·저점 제거
+    # 1단계: 기본 필터
     kept = [c for c in clusters if (c["velocity"] is None or c["velocity"] > -0.3) and c["norm"] >= 5]
+    # 2단계: 하드 블랙리스트
+    kept = [c for c in kept if not _is_blacklisted(c["title"], c.get("headline",""))]
     return sorted(kept, key=lambda x: x["final"], reverse=True)
 
 def why(c):
@@ -215,6 +273,11 @@ def run(geo="US", category="전체", n=6, wiki_lang="en"):
     clusters = cluster(raw)
     clusters = apply_velocity(clusters)
     ranked = score(clusters, None if category in (None, "전체") else category)
+    # 3단계: Claude 빅이슈 스코어링 (상위 15개만 채점해서 API 절약)
+    candidates = ranked[:15]
+    candidates = _claude_bigissue_score(candidates)
+    ranked = [c for c in candidates if c.get("big_score", 7) >= 7] + ranked[15:]
+    ranked = sorted(ranked[:20], key=lambda x: (x.get("big_score",5), x["final"]), reverse=True)
     out = []
     for i, c in enumerate(ranked[:n], 1):
         out.append(dict(
