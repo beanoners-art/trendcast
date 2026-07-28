@@ -1,0 +1,150 @@
+<!doctype html>
+<html lang="ko"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Trendcast — 반자동 트렌드 카드뉴스</title>
+<style>
+:root{--esp:#241812;--ivory:#efe7d6;--amber:#e39b33;--amberd:#b8721c;--muted:#8a7f6d}
+*{box-sizing:border-box;margin:0}
+body{font-family:'Pretendard','Apple SD Gothic Neo','Noto Sans KR',system-ui,sans-serif;
+  background:var(--esp);color:var(--ivory);line-height:1.5}
+.wrap{max-width:1080px;margin:0 auto;padding:40px 28px 80px}
+header{display:flex;align-items:baseline;gap:14px;flex-wrap:wrap;margin-bottom:8px}
+h1{font-size:34px;font-weight:800;letter-spacing:-.02em}
+.tag{color:var(--amber);font-weight:700}
+.desc{color:var(--muted);margin-bottom:26px;font-size:15px}
+.controls{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-bottom:8px}
+.chip{border:1px solid rgba(239,231,214,.2);background:transparent;color:var(--ivory);
+  padding:8px 16px;border-radius:100px;font-size:14px;font-weight:600;cursor:pointer;transition:.15s}
+.chip.on{background:var(--amber);border-color:var(--amber);color:var(--esp)}
+select{background:#2f2119;color:var(--ivory);border:1px solid rgba(239,231,214,.2);
+  padding:8px 12px;border-radius:8px;font-size:14px}
+.btn{background:var(--amber);color:var(--esp);border:0;padding:10px 18px;border-radius:8px;
+  font-weight:700;cursor:pointer;font-size:14px}
+.btn.ghost{background:transparent;color:var(--ivory);border:1px solid rgba(239,231,214,.25)}
+.btn:disabled{opacity:.5;cursor:default}
+.grid{display:flex;flex-direction:column;gap:14px;margin-top:22px}
+.card{background:#2c1f17;border:1px solid rgba(239,231,214,.1);border-radius:16px;padding:20px 22px}
+.card .r1{display:flex;justify-content:space-between;gap:14px;align-items:flex-start}
+.rank{font-size:26px;font-weight:800;color:var(--amber);min-width:44px}
+.ttl{font-size:20px;font-weight:700;flex:1}
+.cat{font-size:12px;font-weight:700;padding:4px 10px;border-radius:100px;
+  background:rgba(227,155,51,.16);color:var(--amber);white-space:nowrap}
+.warn{background:rgba(220,90,60,.18);color:#f0a58f}
+.why{color:var(--muted);font-size:13.5px;margin:10px 0 4px}
+.bars{display:flex;gap:16px;flex-wrap:wrap;font-size:12.5px;color:var(--muted);margin-top:6px}
+.bars b{color:var(--ivory)}
+.headline{color:#c9bda6;font-size:13px;margin-top:8px}
+.act{display:flex;gap:10px;margin-top:14px;flex-wrap:wrap}
+.loading{color:var(--muted);padding:20px 0}
+.result{margin-top:16px;border-top:1px dashed rgba(239,231,214,.15);padding-top:16px}
+.shots{display:flex;gap:10px;overflow-x:auto;padding-bottom:6px}
+.shots img{height:300px;border-radius:10px;border:1px solid rgba(239,231,214,.12)}
+.copybox{background:#231810;border-radius:10px;padding:12px 14px;font-size:13px;color:#d9cdb6;
+  white-space:pre-wrap;margin-top:10px}
+.pub{font-size:13px;color:var(--muted);margin-top:8px}
+.note{font-size:12px;color:var(--muted);margin-top:6px}
+</style></head>
+<body><div class="wrap">
+<header><h1>Trendcast</h1><span class="tag">반자동 트렌드 카드뉴스</span></header>
+<div class="desc">뜨는 속도(트렌드 지수)를 1차 기준으로 종합하고, 소스 교차·인게이지먼트로 다듬어 추천합니다.
+민감 이슈는 <b>제외하지 않고 ‘사실 전달’ 배지</b>로 표시 — 올릴지는 직접 선택하세요.</div>
+
+<div class="controls" id="cats"></div>
+<div class="controls" style="margin-top:6px">
+  <label style="color:var(--muted);font-size:14px">지역</label>
+  <select id="geo">
+    <option value="US">미국(글로벌)</option><option value="KR">한국</option>
+    <option value="GB">영국</option><option value="JP">일본</option>
+  </select>
+  <button class="btn" id="refresh">트렌드 새로고침</button>
+</div>
+
+<div class="grid" id="grid"><div class="loading">불러오는 중…</div></div>
+</div>
+
+<script>
+const CATS=["전체","경제·금융","정치","문화·연예","스포츠","기술·IT","기타"];
+let curCat="전체";
+const grid=document.getElementById("grid");
+
+function chips(){const c=document.getElementById("cats");c.innerHTML="";
+  CATS.forEach(k=>{const b=document.createElement("button");b.className="chip"+(k===curCat?" on":"");
+    b.textContent=k;b.onclick=()=>{curCat=k;chips();load();};c.appendChild(b);});}
+
+async function load(){
+  grid.innerHTML='<div class="loading">불러오는 중…</div>';
+  const geo=document.getElementById("geo").value;
+  const r=await fetch(`/api/trends?geo=${geo}&category=${encodeURIComponent(curCat)}&n=6`);
+  const {items}=await r.json();
+  if(!items.length){grid.innerHTML='<div class="loading">해당 조건의 상승 이슈가 없습니다.</div>';return;}
+  grid.innerHTML="";
+  items.forEach(it=>grid.appendChild(cardEl(it)));
+}
+
+function cardEl(it){
+  const el=document.createElement("div");el.className="card";
+  const vel=(it.velocity==null)?"신규 관측":((it.velocity*100).toFixed(0)+"%");
+  el.innerHTML=`
+    <div class="r1">
+      <div class="rank">${it.rank}</div>
+      <div class="ttl">${it.title}
+        <div class="why">왜 떴나 · ${it.why}</div>
+      </div>
+      <div class="cat ${it.sensitive?'warn':''}">${it.sensitive?'⚠ '+it.category:it.category}</div>
+    </div>
+    <div class="bars">
+      <span>트렌드지수 <b>${it.trend_index}</b></span>
+      <span>소스교차 <b>${it.confidence}×</b></span>
+      <span>최종점수 <b>${it.final}</b></span>
+      <span>상승률 <b>${vel}</b></span>
+      <span>소스 <b>${it.sources.join(", ")}</b></span>
+    </div>
+    ${it.headline?`<div class="headline">“${it.headline}”</div>`:''}
+    ${it.sensitive?'<div class="note">※ 민감 주제입니다. 카피는 사실 전달만 생성되며, 발행 여부는 직접 판단하세요.</div>':''}
+    <div class="act">
+      <button class="btn gen">이 주제로 카드뉴스 만들기</button>
+    </div>
+    <div class="result" style="display:none"></div>`;
+  el.querySelector(".gen").onclick=()=>generate(it,el);
+  return el;
+}
+
+async function generate(it,el){
+  const box=el.querySelector(".result");const btn=el.querySelector(".gen");
+  btn.disabled=true;btn.textContent="생성 중…";box.style.display="block";
+  box.innerHTML='<div class="loading">현지화 + 렌더링 중… (수십 초)</div>';
+  try{
+    const r=await fetch("/api/generate",{method:"POST",headers:{"Content-Type":"application/json"},
+      body:JSON.stringify(it)});
+    const d=await r.json();
+    box.innerHTML=`
+      <div class="shots">${d.images.map(u=>`<img src="${u}">`).join("")}</div>
+      <div class="copybox">${d.caption}</div>
+      ${d.copy._fallback?'<div class="note">※ 지금은 템플릿 카피입니다. ANTHROPIC_API_KEY를 넣으면 자연스러운 한국어로 자동 현지화됩니다.</div>':''}
+      <div class="act">
+        <button class="btn ghost pubi">인스타 예약</button>
+        <button class="btn ghost pubt">스레드 예약</button>
+      </div>
+      <div class="pub"></div>`;
+    box.querySelector(".pubi").onclick=()=>doPublish(d,"instagram",box);
+    box.querySelector(".pubt").onclick=()=>doPublish(d,"threads",box);
+  }catch(e){box.innerHTML='<div class="note">생성 실패: '+e+'</div>';}
+  btn.disabled=false;btn.textContent="다시 만들기";
+}
+
+async function doPublish(d,platform,box){
+  const p=box.querySelector(".pub");p.textContent="요청 중…";
+  const r=await fetch("/api/publish",{method:"POST",headers:{"Content-Type":"application/json"},
+    body:JSON.stringify({images:d.images,caption:d.caption,platform})});
+  const res=await r.json();
+  if(res.status==="dry_run")
+    p.innerHTML=`드라이런(${platform}) — 자격증명 미설정. 올릴 내용은 준비됨: ${res.would_post.images.length}장.
+      실제 발행은 Meta 앱/토큰 연결 후 동작합니다.`;
+  else if(res.status==="published") p.textContent=`발행 완료(${platform}) ✓`;
+  else p.textContent=`(${platform}) ${res.status}: ${res.reason||res.error||''}`;
+}
+
+document.getElementById("refresh").onclick=load;
+chips();load();
+</script>
+</body></html>

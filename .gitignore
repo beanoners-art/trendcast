@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+.env
+outputs/*.png
+outputs/*.html
+snapshots.json
+server.log
+_preview.py
