@@ -238,47 +238,52 @@ Give a slight boost to topics relevant to Korea or Asia. Output ONLY a JSON arra
     return items
 
 def _claude_translate_titles(items):
-    """트렌드 카드 제목+헤드라인을 한국어로 번역. 키 없으면 원문 유지."""
+    """트렌드 카드 제목+헤드라인을 한국어로 번역. 개별 매칭 + 폴백."""
     import os as _os, json as _json, re as _re3
     key = _os.environ.get("ANTHROPIC_API_KEY", "")
+    # 기본값: 원문 (실패해도 최소한 원문 유지)
+    for c in items:
+        c.setdefault("title_ko", c["title"])
+        c.setdefault("headline_ko", c.get("headline", ""))
     if not key or not items:
-        for c in items:
-            c["title_ko"] = c["title"]
-            c["headline_ko"] = c.get("headline", "")
         return items
     try:
         from anthropic import Anthropic
         client = Anthropic(api_key=key)
-        # 제목+헤드라인을 함께 번역 (한 번 호출로 비용 절약)
         entries = []
         for i, c in enumerate(items):
-            hl = (c.get("headline") or "")[:80]
-            entries.append(f'{i+1}. 제목: {c["title"]} | 요약: {hl}')
+            hl = (c.get("headline") or "")[:100]
+            entries.append(f'[{i}] 제목: {c["title"]}\n    요약: {hl}')
         lst = "\n".join(entries)
         msg = client.messages.create(
             model=_os.environ.get("CLAUDE_MODEL", "claude-sonnet-4-6"),
-            max_tokens=1000,
-            system="""Translate each item's title and summary to natural Korean.
-Keep proper nouns (people/brand/place names) in their common Korean form.
-Output ONLY a JSON array of objects: [{"title":"...","headline":"..."}, ...]
-Same order as input. If summary is empty, output empty string.""",
+            max_tokens=1500,
+            system="""Translate each item's title and summary into natural Korean.
+Keep proper nouns (people/brand/place names) in common Korean form.
+You MUST return EXACTLY one object per input index, in order.
+Output ONLY a JSON array like:
+[{"i":0,"title":"...","headline":"..."},{"i":1,"title":"...","headline":"..."}]
+Include every index from 0 to the last. If summary empty, use "".""",
             messages=[{"role": "user", "content": lst}]
         )
         txt = "".join(b.text for b in msg.content if b.type == "text").strip()
         txt = _re3.sub(r"^```json|```$", "", txt).strip()
+        m = _re3.search(r"\[.*\]", txt, _re3.S)
+        if m: txt = m.group(0)
         results = _json.loads(txt)
+        # 인덱스 기반 매칭 (순서 어긋나도 안전)
+        by_i = {}
+        for r in results:
+            if isinstance(r, dict) and "i" in r:
+                by_i[int(r["i"])] = r
         for i, c in enumerate(items):
-            if i < len(results):
-                c["title_ko"]    = results[i].get("title", c["title"])
-                c["headline_ko"] = results[i].get("headline", c.get("headline",""))
-            else:
-                c["title_ko"]    = c["title"]
-                c["headline_ko"] = c.get("headline","")
+            r = by_i.get(i)
+            if r:
+                if r.get("title"):    c["title_ko"] = r["title"]
+                c["headline_ko"] = r.get("headline", "") or c.get("headline", "")
+            # 없으면 이미 setdefault로 원문 유지됨
     except Exception as e:
         print("[translate] err", e)
-        for c in items:
-            c["title_ko"] = c["title"]
-            c["headline_ko"] = c.get("headline","")
     return items
 
 # ---------- 점수 조립 ----------
