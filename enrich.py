@@ -159,25 +159,84 @@ def hn_reactions(query, n=4):
     return hits
 
 # ── 통합 ───────────────────────────────────────────────
+def naver_news_articles(query, n=5):
+    """네이버 뉴스 검색 — 국내 기사 제목·요약 (enrich 재료용)."""
+    cid = _env("NAVER_CLIENT_ID")
+    sec = _env("NAVER_CLIENT_SECRET")
+    if not (cid and sec): return []
+    arts = []
+    try:
+        r = requests.get("https://openapi.naver.com/v1/search/news.json",
+            params={"query": query, "display": n, "sort": "sim"},
+            headers={"X-Naver-Client-Id": cid, "X-Naver-Client-Secret": sec,
+                     "User-Agent": "trendcast/0.3"}, timeout=10)
+        if r.status_code == 200:
+            import re as _re2
+            for item in r.json().get("items", [])[:n]:
+                title = _re2.sub(r"<[^>]+>","", item.get("title","")).strip()
+                desc  = _re2.sub(r"<[^>]+>","", item.get("description","")).strip()
+                if title:
+                    arts.append(dict(title=title, domain="네이버뉴스",
+                                     date="", url=item.get("originallink",""),
+                                     body=desc[:300]))
+        else:
+            print("[naver_news_enrich] status", r.status_code)
+    except Exception as e:
+        print("[naver_news_enrich] err", e)
+    return arts
+
+
+def kakao_news_articles(query, n=4):
+    """카카오 뉴스 검색 — 국내 기사 제목·요약."""
+    key = _env("KAKAO_REST_API_KEY")
+    if not key: return []
+    arts = []
+    try:
+        r = requests.get("https://dapi.kakao.com/v2/search/web",
+            params={"query": query + " 뉴스", "size": n},
+            headers={"Authorization": f"KakaoAK {key}",
+                     "User-Agent": "trendcast/0.3"}, timeout=10)
+        if r.status_code == 200:
+            for d in r.json().get("documents",[])[:n]:
+                title = d.get("title","").replace("<b>","").replace("</b>","").strip()
+                if title:
+                    arts.append(dict(title=title, domain="카카오",
+                                     date="", url=d.get("url",""),
+                                     body=(d.get("contents","") or "")[:300]))
+        else:
+            print("[kakao_enrich] status", r.status_code)
+    except Exception as e:
+        print("[kakao_enrich] err", e)
+    return arts
+
+
 def gather(topic, lang="en"):
     title = topic.get("title", "")
     wiki      = wiki_material(title, lang)
     guardian  = guardian_articles(title)
-    newsapi   = newsapi_articles(title) if not guardian else newsapi_articles(title, 2)
-    reddit    = reddit_reactions(title)
-    hn        = hn_reactions(title)
-    total_body = sum(len(a.get("body","")) for a in guardian)
-    print(f"[gather] guardian={len(guardian)}({total_body}ch) newsapi={len(newsapi)} "
-          f"reddit={len(reddit)} hn={len(hn)} wiki={len(wiki['lead'])}ch")
+    newsapi   = newsapi_articles(title, 2) if guardian else newsapi_articles(title)
+    # 국내 이슈(geo=KR)이면 네이버·카카오 기사도 재료로
+    is_kr = (topic.get("geo","") == "KR" or
+             any(s in topic.get("sources",[]) for s in ("naver_datalab","naver_news","kakao_news")))
+    naver  = naver_news_articles(title) if is_kr else []
+    kakao  = kakao_news_articles(title) if is_kr and not naver else []
+    reddit = reddit_reactions(title)
+    hn     = hn_reactions(title)
+    total_body = sum(len(a.get("body","")) for a in guardian+naver)
+    print(f"[gather] guardian={len(guardian)} naver={len(naver)} kakao={len(kakao)} "
+          f"newsapi={len(newsapi)} reddit={len(reddit)} hn={len(hn)} "
+          f"wiki={len(wiki['lead'])}ch body={total_body}ch")
+    # 국내 뉴스를 guardian 자리에 같이 넣음 (llm.py는 guardian 키를 재료로 사용)
+    all_articles = guardian + naver + kakao
     return {
         "title": title,
         "description": wiki["description"],
         "lead": wiki["lead"],
         "headline": topic.get("headline", ""),
-        "guardian": guardian,
+        "guardian": all_articles,
         "news": newsapi,
         "reddit": reddit,
         "hn": hn,
         "url": wiki["url"] or topic.get("url", ""),
-        "has_body": bool(wiki["lead"] or guardian or newsapi),
+        "has_body": bool(wiki["lead"] or all_articles or newsapi),
     }

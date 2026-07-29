@@ -302,9 +302,9 @@ REGION_PRESETS = {
     "GB":  [("GB", "en")],
     "JP":  [("JP", "ja"), ("JP", "en")],
 }
+KR_NAVER_ENABLED = True   # 네이버/카카오 국내 소스 사용 여부
 
 def run(geo="GLOBAL_KR", category="전체", n=6, wiki_lang="en"):
-    # 다지역 수집: geo가 프리셋이면 여러 나라 트렌드+위키를 합침
     regions = REGION_PRESETS.get(geo, [(geo, wiki_lang)])
     raw = []
     seen_geo = set()
@@ -314,6 +314,12 @@ def run(geo="GLOBAL_KR", category="전체", n=6, wiki_lang="en"):
             raw += fetch_wikipedia(lang)
             seen_geo.add(lang)
     raw += fetch_gdelt()
+    # 국내 소스: KR 지역이 포함된 경우 네이버·카카오 추가
+    is_kr = any(g == "KR" for g, _ in regions)
+    if is_kr:
+        raw += fetch_naver_datalab()
+        raw += fetch_naver_news("오늘 주요 뉴스 이슈")
+        raw += fetch_kakao_news("오늘 화제")
     raw = percentile_normalize(raw)
     clusters = cluster(raw)
     clusters = apply_velocity(clusters)
@@ -344,3 +350,113 @@ if __name__ == "__main__":
         flag = "⚠사실전달" if r["sensitive"] else "  "
         print(f"{r['rank']}. [{r['category']}]{flag} {r['title']}  (지수 {r['trend_index']} · 확신 {r['confidence']} · 최종 {r['final']})")
         print(f"    왜: {r['why']}")
+
+
+# ── 네이버 데이터랩: 국내 검색 트렌드 ─────────────────
+def fetch_naver_datalab():
+    """네이버 데이터랩으로 국내 인기 검색어 그룹 트렌드 수집."""
+    import os as _os, datetime as _dt
+    cid = _os.environ.get("NAVER_CLIENT_ID","")
+    sec = _os.environ.get("NAVER_CLIENT_SECRET","")
+    if not (cid and sec):
+        return []
+    today = _dt.date.today()
+    start = (today - _dt.timedelta(days=7)).strftime("%Y-%m-%d")
+    end   = today.strftime("%Y-%m-%d")
+    # 국내 주요 키워드 그룹 (트렌드 신호)
+    groups = [
+        {"groupName":"경제·증시","keywords":["코스피","환율","금리","증시","주식"]},
+        {"groupName":"정치","keywords":["대통령","국회","정부","선거","여당","야당"]},
+        {"groupName":"연예·문화","keywords":["드라마","영화","아이돌","K팝","콘서트"]},
+        {"groupName":"스포츠","keywords":["야구","축구","NBA","EPL","올림픽"]},
+        {"groupName":"IT·기술","keywords":["AI","반도체","삼성","애플","카카오"]},
+    ]
+    out = []
+    try:
+        hdrs = {"X-Naver-Client-Id": cid, "X-Naver-Client-Secret": sec,
+                "Content-Type": "application/json", "User-Agent": "trendcast/0.3"}
+        r = requests.post("https://openapi.naver.com/v1/datalab/search",
+            json={"startDate": start, "endDate": end, "timeUnit": "date",
+                  "keywordGroups": groups},
+            headers=hdrs, timeout=12)
+        if r.status_code == 200:
+            for res in r.json().get("results", []):
+                name = res.get("title","")
+                data = res.get("data",[])
+                if not data: continue
+                # 최근 3일 평균 vs 그 이전 4일 평균 → 상승률 계산
+                recent  = [d["ratio"] for d in data[-3:]]
+                earlier = [d["ratio"] for d in data[:4]]
+                avg_r = sum(recent)/len(recent)   if recent  else 0
+                avg_e = sum(earlier)/len(earlier) if earlier else 0
+                velocity = (avg_r - avg_e) / max(avg_e, 1)
+                out.append(dict(title=name, source="naver_datalab",
+                                magnitude=avg_r * (1 + velocity),
+                                headline=f"네이버 국내 검색 트렌드 · 최근 지수 {avg_r:.1f}",
+                                geo="KR"))
+        else:
+            print("[naver_datalab] status", r.status_code, r.text[:80])
+    except Exception as e:
+        print("[naver_datalab] err", e)
+    return out
+
+
+# ── 네이버 뉴스 검색: 실시간 국내 뉴스 헤드라인 ─────────
+def fetch_naver_news(query="오늘 주요 뉴스", n=10):
+    """네이버 뉴스 검색 API — 국내 기사 제목·링크."""
+    import os as _os
+    cid = _os.environ.get("NAVER_CLIENT_ID","")
+    sec = _os.environ.get("NAVER_CLIENT_SECRET","")
+    if not (cid and sec):
+        return []
+    out = []
+    try:
+        r = requests.get("https://openapi.naver.com/v1/search/news.json",
+            params={"query": query, "display": n, "sort": "date"},
+            headers={"X-Naver-Client-Id": cid, "X-Naver-Client-Secret": sec,
+                     "User-Agent": "trendcast/0.3"},
+            timeout=10)
+        if r.status_code == 200:
+            import re as _re2
+            for item in r.json().get("items", [])[:n]:
+                title = _re2.sub(r"<[^>]+>","", item.get("title","")).strip()
+                desc  = _re2.sub(r"<[^>]+>","", item.get("description","")).strip()
+                if title:
+                    out.append(dict(title=title, source="naver_news",
+                                    magnitude=50.0,
+                                    headline=desc[:100], geo="KR",
+                                    url=item.get("originallink","")))
+        else:
+            print("[naver_news] status", r.status_code)
+    except Exception as e:
+        print("[naver_news] err", e)
+    return out
+
+
+# ── 카카오 뉴스 검색: 국내 뉴스 보완 ─────────────────────
+def fetch_kakao_news(query="오늘 뉴스", n=5):
+    """카카오 검색 API — 뉴스 검색."""
+    import os as _os
+    key = _os.environ.get("KAKAO_REST_API_KEY","")
+    if not key:
+        return []
+    out = []
+    try:
+        r = requests.get("https://dapi.kakao.com/v2/search/web",
+            params={"query": query + " 뉴스", "size": n},
+            headers={"Authorization": f"KakaoAK {key}",
+                     "User-Agent": "trendcast/0.3"},
+            timeout=10)
+        if r.status_code == 200:
+            for d in r.json().get("documents",[])[:n]:
+                title = d.get("title","").replace("<b>","").replace("</b>","").strip()
+                if title:
+                    out.append(dict(title=title, source="kakao_news",
+                                    magnitude=45.0,
+                                    headline=(d.get("contents","") or "")[:100],
+                                    geo="KR", url=d.get("url","")))
+        else:
+            print("[kakao_news] status", r.status_code)
+    except Exception as e:
+        print("[kakao_news] err", e)
+    return out
