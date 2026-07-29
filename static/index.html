@@ -127,7 +127,9 @@ function cardEl(it){
   el.innerHTML=`
     <div class="r1">
       <div class="rank">${it.rank}</div>
-      <div class="ttl">${esc(it.title)}<div class="why">왜 떴나 · ${esc(it.why)}</div></div>
+      <div class="ttl">${esc(it.title_ko||it.title)}
+        ${it.title_ko&&it.title_ko!==it.title?`<span style="font-size:12px;color:var(--muted);font-weight:500"> · ${esc(it.title)}</span>`:""}
+        <div class="why">왜 떴나 · ${esc(it.why)}</div></div>
       <div class="cat ${warn}">${it.sensitive?"⚠ ":""}${it.category}</div>
     </div>
     <div class="bars">
@@ -210,12 +212,24 @@ function editorEl(d,it){
         <div class="field-row"><label>제목</label></div>
         <textarea class="field" id="ttl-${it.rank}" style="min-height:44px">${(slides[curSlide]||{}).title||""}</textarea>
         <div class="field-row" style="margin-top:8px"><label>본문 (**볼드** 마커 사용 가능)</label></div>
-        <textarea class="field" id="txt-${it.rank}" style="min-height:120px">${(slides[curSlide]||{}).body||""}</textarea>
+        <textarea class="field" id="txt-${it.rank}" style="min-height:110px">${(slides[curSlide]||{}).body||""}</textarea>
+        <!-- 폰트/정렬 컨트롤 -->
+        <div class="field-row" style="margin-top:10px;gap:14px">
+          <label>글자 크기</label>
+          <input type="range" id="fs-${it.rank}" min="0.7" max="1.4" step="0.05"
+            value="${(slides[curSlide]||{}).fontScale||1}" style="flex:1">
+          <span id="fsv-${it.rank}" style="font-size:12px;color:var(--amber);min-width:36px">${Math.round(((slides[curSlide]||{}).fontScale||1)*100)}%</span>
+        </div>
+        <div class="field-row" style="gap:8px">
+          <label>정렬</label>
+          <button class="btn sm ghost algn" data-a="left" data-r="${it.rank}">왼쪽</button>
+          <button class="btn sm ghost algn" data-a="center" data-r="${it.rank}">가운데</button>
+        </div>
         <!-- image swap -->
         <div class="img-panel">
           <div class="field-row" style="margin-top:10px">
-            <label>배경 이미지 교체</label>
-            <input type="text" id="imgq-${it.rank}" placeholder="검색어 입력 (영문 권장)" style="flex:1">
+            <label>이 슬라이드 사진 교체</label>
+            <input type="text" id="imgq-${it.rank}" placeholder="검색어 (영문 권장, 예: seoul city)" style="flex:1">
             <button class="btn sm ghost" id="imgsearch-${it.rank}">검색</button>
           </div>
           <div class="img-grid" id="imgres-${it.rank}"></div>
@@ -240,6 +254,25 @@ function editorEl(d,it){
         wrap.querySelectorAll(".stab").forEach(x=>x.classList.remove("on")); b.classList.add("on");
         tt.value=(slides[curSlide]||{}).title||"";
         ta.value=(slides[curSlide]||{}).body||"";
+        // 스타일 컨트롤 갱신
+        const fs=wrap.querySelector(`#fs-${it.rank}`);
+        const fsv=wrap.querySelector(`#fsv-${it.rank}`);
+        if(fs){const v=(slides[curSlide]||{}).fontScale||1; fs.value=v; if(fsv)fsv.textContent=Math.round(v*100)+"%";}
+      };
+    });
+    // 글자 크기 슬라이더
+    const fsEl=wrap.querySelector(`#fs-${it.rank}`);
+    if(fsEl) fsEl.oninput=()=>{
+      const v=parseFloat(fsEl.value);
+      slides[curSlide]={...(slides[curSlide]||{}),fontScale:v};
+      const fsv=wrap.querySelector(`#fsv-${it.rank}`); if(fsv)fsv.textContent=Math.round(v*100)+"%";
+    };
+    // 정렬 버튼
+    wrap.querySelectorAll(`.algn[data-r="${it.rank}"]`).forEach(bt=>{
+      bt.onclick=()=>{
+        slides[curSlide]={...(slides[curSlide]||{}),align:bt.dataset.a};
+        wrap.querySelectorAll(`.algn[data-r="${it.rank}"]`).forEach(x=>x.classList.remove("on"));
+        bt.classList.add("on");
       };
     });
     // preview click highlight
@@ -262,7 +295,7 @@ function editorEl(d,it){
       const res=await fetch("/api/rerender",{method:"POST",
         headers:{"Content-Type":"application/json"},
         body:JSON.stringify({slides,ko_title:d.copy.ko_title,why_ko:d.copy.why_ko,
-          bg_url:imgUrl||d.bg_url, slide_imgs:d.slide_imgs||[],
+          bg_url:d.bg_url, slide_imgs:d.slide_imgs||[],
           sensitive:it.sensitive||false})}).then(r=>r.json());
       // update preview
       const shots=wrap.querySelector(`#shots-${it.rank}`);
@@ -291,7 +324,8 @@ function editorEl(d,it){
           img.onclick=()=>{
             grid2.querySelectorAll("img").forEach(x=>x.classList.remove("sel"));
             img.classList.add("sel");
-            imgUrl=img.dataset.full;
+            // 현재 슬라이드에 사진 지정 (img=true 강제)
+            slides[curSlide]={...(slides[curSlide]||{}),img:true,img_url:img.dataset.full};
           };
         });
       }

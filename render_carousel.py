@@ -32,8 +32,10 @@ def _slide_html(i, n, slide, bg_b64, content_b64, watermark, sensitive):
     title = (slide.get("title") or "").replace("<", "&lt;").replace("\n", "<br>")
     body  = _fmt_body(slide.get("body", ""))
     is_cover = (i == 0)
-    tsize = 96 if is_cover else 64
-    bsize = 34 if is_cover else 30
+    fscale = float(slide.get("fontScale", 1.0))
+    align  = slide.get("align", "left")   # left | center
+    tsize = int((96 if is_cover else 64) * fscale)
+    bsize = int((34 if is_cover else 30) * fscale)
 
     bg_layer = (f"background:linear-gradient(rgba(23,16,9,.55),rgba(23,16,9,.72)),"
                 f"url('{bg_b64}') center/cover no-repeat;") if bg_b64 else \
@@ -52,7 +54,8 @@ def _slide_html(i, n, slide, bg_b64, content_b64, watermark, sensitive):
     .s{{width:1080px;height:1350px;{bg_layer}color:{IVORY};
       font-family:'Pretendard','Noto Sans CJK KR',sans-serif;
       padding:88px 84px 72px;display:flex;flex-direction:column;
-      overflow:hidden;-webkit-font-smoothing:antialiased;position:relative}}
+      overflow:hidden;-webkit-font-smoothing:antialiased;position:relative;
+      text-align:{align}}}
     h1{{font-size:{tsize}px;font-weight:800;line-height:1.22;letter-spacing:-.02em;
       word-break:keep-all;color:{IVORY};
       text-shadow:0 2px 24px rgba(0,0,0,.45);margin-bottom:34px}}
@@ -61,7 +64,8 @@ def _slide_html(i, n, slide, bg_b64, content_b64, watermark, sensitive):
       margin-left:14px;letter-spacing:0}}
     .body{{font-size:{bsize}px;font-weight:500;line-height:1.72;
       word-break:keep-all;color:rgba(245,239,226,.94);
-      text-shadow:0 1px 12px rgba(0,0,0,.5);max-width:900px}}
+      text-shadow:0 1px 12px rgba(0,0,0,.5);max-width:900px;
+      margin-left:{'auto' if align=='center' else '0'};margin-right:{'auto' if align=='center' else '0'}}}
     .hl{{color:{AMBER};font-weight:800}}
     .photo{{margin:36px 0 8px;position:relative;border-radius:14px;overflow:hidden;
       box-shadow:0 10px 40px rgba(0,0,0,.45)}}
@@ -105,10 +109,16 @@ def render(copy, out_dir, sensitive=False, slug="trend",
     imgs_b64 = []
     for k in range(n):
         s = slides[k]
-        want = s.get("img") and slide_imgs and k < len(slide_imgs) and slide_imgs[k]
-        imgs_b64.append(_b64(slide_imgs[k]["url"]) if want else None)
-        # 사진 위치: 표지는 본문 아래, 나머지는 번갈아
-        s["_photo_top"] = (k % 2 == 1)
+        # 편집기에서 교체한 개별 이미지 URL 우선
+        override = s.get("img_url")
+        if override:
+            imgs_b64.append(_b64(override))
+        else:
+            want = s.get("img") and slide_imgs and k < len(slide_imgs) and slide_imgs[k]
+            imgs_b64.append(_b64(slide_imgs[k]["url"]) if want else None)
+        # 사진 위치: 편집기 지정 우선, 없으면 번갈아
+        if "_photo_top" not in s:
+            s["_photo_top"] = (k % 2 == 1)
 
     paths = []
     with sync_playwright() as p:

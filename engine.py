@@ -233,6 +233,33 @@ Give a slight boost to topics relevant to Korea or Asia. Output ONLY a JSON arra
         for c in items: c["big_score"] = 7
     return items
 
+def _claude_translate_titles(items):
+    """트렌드 카드 제목을 짧은 한국어로 번역. 키 없으면 원문 유지."""
+    import os as _os, json as _json, re as _re3
+    key = _os.environ.get("ANTHROPIC_API_KEY", "")
+    if not key or not items:
+        for c in items: c["title_ko"] = c["title"]
+        return items
+    try:
+        from anthropic import Anthropic
+        client = Anthropic(api_key=key)
+        lst = "\n".join(f"{i+1}. {c['title']}" for i, c in enumerate(items))
+        msg = client.messages.create(
+            model=_os.environ.get("CLAUDE_MODEL", "claude-sonnet-4-6"),
+            max_tokens=600,
+            system="Translate each item to a short natural Korean title (keep proper nouns; people/brand names can stay or use common Korean form). Output ONLY a JSON array of strings, same order.",
+            messages=[{"role": "user", "content": lst}]
+        )
+        txt = "".join(b.text for b in msg.content if b.type == "text").strip()
+        txt = _re3.sub(r"^```json|```$", "", txt).strip()
+        kos = _json.loads(txt)
+        for i, c in enumerate(items):
+            c["title_ko"] = kos[i] if i < len(kos) else c["title"]
+    except Exception as e:
+        print("[translate] err", e)
+        for c in items: c["title_ko"] = c["title"]
+    return items
+
 # ---------- 점수 조립 ----------
 def score(clusters, category=None):
     for c in clusters:
@@ -296,10 +323,13 @@ def run(geo="GLOBAL_KR", category="전체", n=6, wiki_lang="en"):
     candidates = _claude_bigissue_score(candidates)
     ranked = [c for c in candidates if c.get("big_score", 7) >= 7] + ranked[15:]
     ranked = sorted(ranked[:20], key=lambda x: (x.get("big_score",5), x["final"]), reverse=True)
+    top = ranked[:n]
+    top = _claude_translate_titles(top)   # 제목 한글화
     out = []
-    for i, c in enumerate(ranked[:n], 1):
+    for i, c in enumerate(top, 1):
         out.append(dict(
-            rank=i, title=c["title"], headline=c.get("headline", ""), url=c.get("url", ""),
+            rank=i, title=c["title"], title_ko=c.get("title_ko", c["title"]),
+            headline=c.get("headline", ""), url=c.get("url", ""),
             category=c["category"], sensitive=c["sensitive"],
             trend_index=c["trend_index"], confidence=c["confidence"],
             final=c["final"], velocity=c["velocity"], sources=sorted(c["sources"]),
