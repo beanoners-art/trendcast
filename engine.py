@@ -217,10 +217,10 @@ def _claude_bigissue_score(items):
         msg = client.messages.create(
             model=_os.environ.get("CLAUDE_MODEL","claude-sonnet-4-6"),
             max_tokens=300,
-            system="""You are a global news editor. Rate each topic 0-10 for international significance.
-Low (0-4): local weather, quiz answers, minor gossip, training schedules, regional events.
-High (7-10): major political events, economic news, viral global controversy, breakthrough tech, significant cultural moments.
-Output ONLY a JSON array of integers. Example: [8,3,9,2,7]""",
+            system="""You are an editor for a KOREAN social media audience. Rate each topic 0-10 for how much KOREAN readers would care about it.
+Low (0-4): foreign local weather, quiz answers, obscure regional events, minor gossip with no Korea relevance, foreign sports schedules.
+High (7-10): major world politics/economy affecting Korea, global tech/AI, K-culture & entertainment, issues involving Korea/Asia, viral global stories, major disasters, big international sports.
+Give a slight boost to topics relevant to Korea or Asia. Output ONLY a JSON array of integers. Example: [8,3,9,2,7]""",
             messages=[{"role":"user","content":f"Rate these:\n{topics}"}]
         )
         txt = "".join(b.text for b in msg.content if b.type=="text").strip()
@@ -267,8 +267,26 @@ def why(c):
     return " · ".join(bits)
 
 # ---------- 파이프라인 진입점 ----------
-def run(geo="US", category="전체", n=6, wiki_lang="en"):
-    raw = fetch_google_trends(geo) + fetch_wikipedia(wiki_lang) + fetch_gdelt()
+# 지역 프리셋: 한국 관심사 중심으로 다국가 혼합
+REGION_PRESETS = {
+    "GLOBAL_KR": [("KR", "ko"), ("KR", "en"), ("US", "en"), ("GB", "en"), ("JP", "en")],
+    "US":  [("US", "en")],
+    "KR":  [("KR", "ko"), ("KR", "en")],
+    "GB":  [("GB", "en")],
+    "JP":  [("JP", "ja"), ("JP", "en")],
+}
+
+def run(geo="GLOBAL_KR", category="전체", n=6, wiki_lang="en"):
+    # 다지역 수집: geo가 프리셋이면 여러 나라 트렌드+위키를 합침
+    regions = REGION_PRESETS.get(geo, [(geo, wiki_lang)])
+    raw = []
+    seen_geo = set()
+    for g, lang in regions:
+        raw += fetch_google_trends(g)
+        if lang not in seen_geo:
+            raw += fetch_wikipedia(lang)
+            seen_geo.add(lang)
+    raw += fetch_gdelt()
     raw = percentile_normalize(raw)
     clusters = cluster(raw)
     clusters = apply_velocity(clusters)
