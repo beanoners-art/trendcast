@@ -13,7 +13,7 @@ SYS = """너는 한국 매거진 에디터다. 주어진 재료(기사 전문·�
 
 각 슬라이드 형식:
 - title: 짧고 강한 헤드라인 (10~18자, 줄바꿈 가능: \\n 사용)
-- body: 4~7문장의 문단. 핵심 단어는 **볼드**로 감싼다 (한 문단에 2~4개).
+- body: 3~5문장의 문단. 핵심 단어는 **볼드**로 감싼다 (한 문단에 2~4개).
   재료에 있는 구체적 사실(인물 이름·직책·날짜·금액·수치·기관명)을 반드시 살린다.
   재료에 없는 사실·숫자는 절대 지어내지 않는다.
 - img: 이 슬라이드에 사진이 들어가면 좋은지 true/false
@@ -65,15 +65,46 @@ def _anthropic(material, sensitive):
         user = (f"[재료]\n{_material_text(material)[:9000]}\n\n"
                 f"[민감 주제] {sensitive}\n"
                 f"위 재료로 에디토리얼 카드뉴스를 만들어라. 구체적 사실을 최대한 살려라.")
-        msg = client.messages.create(model=MODEL(), max_tokens=3000,
+        msg = client.messages.create(model=MODEL(), max_tokens=5000,
                                      system=SYS, messages=[{"role": "user", "content": user}])
         txt = "".join(b.text for b in msg.content if b.type == "text")
-        txt = re.sub(r"^```json|```$", "", txt.strip()).strip()
-        data = json.loads(txt)
-        if data.get("slides") and isinstance(data["slides"][0], dict):
+        data = _safe_json(txt)
+        if data and data.get("slides") and isinstance(data["slides"][0], dict):
             return data
+        print("[llm] parse failed, len=", len(txt))
     except Exception as e:
         print("[llm] err", e)
+    return None
+
+def _safe_json(txt):
+    """마크다운 펜스 제거 + 잘린 JSON 복구 시도."""
+    t = txt.strip()
+    t = re.sub(r"^```(?:json)?", "", t).strip()
+    t = re.sub(r"```$", "", t).strip()
+    # 1) 그대로 파싱
+    try:
+        return json.loads(t)
+    except Exception:
+        pass
+    # 2) 잘린 경우: 마지막 완전한 슬라이드까지만 살려서 배열/객체 닫기
+    try:
+        # slides 배열에서 완결된 } 까지 자르기
+        idx = t.rfind("},")
+        if idx > 0:
+            repaired = t[:idx+1] + "]}"
+            return json.loads(repaired)
+    except Exception:
+        pass
+    # 3) 객체 하나라도 건지기
+    try:
+        objs = re.findall(r'\{[^{}]*"title"[^{}]*"body"[^{}]*\}', t, re.S)
+        slides = [json.loads(o) for o in objs]
+        if slides:
+            title = (re.search(r'"ko_title"\s*:\s*"([^"]+)"', t) or [None, ""])
+            return {"ko_title": title[1] if isinstance(title, list) else "",
+                    "why_ko": "", "slides": slides}
+    except Exception:
+        pass
     return None
 
 def _fallback(material, sensitive):

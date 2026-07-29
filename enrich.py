@@ -4,7 +4,7 @@
 소스: Guardian(전문) > NYT(선택) > NewsAPI(발췌) / 위키 리드 / Reddit·HN(반응)
 모든 소스는 실패해도 전체 파이프라인이 죽지 않게 graceful.
 """
-import os, requests, urllib.parse
+import os, re, requests, urllib.parse
 
 UA = {"User-Agent": "Mozilla/5.0 (trendcast/0.3)"}
 
@@ -35,6 +35,12 @@ def wiki_material(title, lang="en"):
     return out
 
 # ── Guardian: 기사 전문 (핵심 재료) ────────────────────
+def _short_q(query, maxlen=80):
+    # 긴 제목 → 핵심 단어 위주로 축약 (Guardian 414 방지)
+    q = re.sub(r"[^\w\s]", " ", query)
+    words = [w for w in q.split() if len(w) > 2][:6]
+    return " ".join(words)[:maxlen] or query[:maxlen]
+
 def guardian_articles(query, n=3):
     key = _env("GUARDIAN_API_KEY")
     if not key:
@@ -42,7 +48,7 @@ def guardian_articles(query, n=3):
     arts = []
     try:
         r = requests.get("https://content.guardianapis.com/search",
-            params={"q": query, "show-fields": "bodyText,headline",
+            params={"q": _short_q(query), "show-fields": "bodyText,headline",
                     "order-by": "relevance", "page-size": n, "api-key": key},
             headers=UA, timeout=10)
         if r.status_code == 200:
