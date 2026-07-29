@@ -104,15 +104,40 @@ async def rerender(req: Request):
 def image_search(q: str="", n: int=6):
     return {"results": images.search_images(q, n)}
 
+# ── 인스타 규격 리사이즈 (발행용 1080px JPG) ──────────
+def _make_publish_images(image_urls):
+    """2x PNG → 인스타 규격 1080px JPG로 변환, /outputs에 저장, 상대경로 반환."""
+    from PIL import Image
+    out = []
+    for u in image_urls:
+        fname = os.path.basename(u)
+        src = os.path.join(OUT, fname)
+        if not os.path.exists(src):
+            out.append(u); continue
+        try:
+            im = Image.open(src).convert("RGB")
+            # 인스타 4:5 권장, 가로 1080
+            w, h = im.size
+            target_w = 1080
+            target_h = int(target_w * h / w)
+            im = im.resize((target_w, target_h), Image.LANCZOS)
+            pub_name = "pub_" + os.path.splitext(fname)[0] + ".jpg"
+            im.save(os.path.join(OUT, pub_name), "JPEG", quality=88)
+            out.append("/outputs/" + pub_name)
+        except Exception as e:
+            print("[publish-resize] err", e)
+            out.append(u)
+    return out
+
 # ── publish ───────────────────────────────────────────────
 @app.post("/api/publish")
 async def do_publish(req: Request):
     d    = await req.json()
-    base = os.environ.get("PUBLIC_IMAGE_BASE","")
-    urls = [base+u if base else u for u in d.get("images",[])]
     plat = d.get("platform","instagram")
-    res  = (publish.publish_threads(urls, d.get("caption","")) if plat=="threads"
-            else publish.publish_instagram(urls, d.get("caption","")))
+    # 발행용 규격 이미지 생성 (인스타/스레드 규격)
+    pub_imgs = await run_in_threadpool(_make_publish_images, d.get("images",[]))
+    res  = (publish.publish_threads(pub_imgs, d.get("caption","")) if plat=="threads"
+            else publish.publish_instagram(pub_imgs, d.get("caption","")))
     return JSONResponse(res)
 
 if __name__ == "__main__":
