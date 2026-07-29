@@ -44,6 +44,7 @@ def publish_instagram(image_urls, caption):
                 "error": "PUBLIC_IMAGE_BASE 미설정 — 인스타는 공개 이미지 URL이 필요합니다. "
                          "Railway에 PUBLIC_IMAGE_BASE=https://<앱주소> 를 추가하세요."}
     urls = [_abs(u, c["base"]) for u in image_urls]
+    print("[publish-ig] image urls:", urls)
     try:
         # 1) 각 이미지 캐러셀 아이템 컨테이너
         children = []
@@ -52,9 +53,11 @@ def publish_instagram(image_urls, caption):
                 data={"image_url": u, "is_carousel_item": "true",
                       "access_token": c["token"]}, timeout=30)
             j = r.json()
+            print(f"[publish-ig] container resp for {u}: {j}")
             if "id" not in j:
                 return {"status": "error", "platform": "instagram",
-                        "error": f"이미지 컨테이너 생성 실패: {_err(r)}", "image": u}
+                        "error": f"이미지 컨테이너 생성 실패: {_err(r)}", "image": u,
+                        "hint": "이미지 URL이 공개 접근 가능한지, JPG인지 확인"}
             children.append(j["id"])
         # 2) 캐러셀 컨테이너
         r = requests.post(f"{GRAPH}/{c['ig']}/media",
