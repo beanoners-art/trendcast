@@ -28,20 +28,23 @@ def trends(geo: str="US", category: str="전체", n: int=6, wiki_lang: str="en")
 # ── generate ──────────────────────────────────────────────
 def _generate_sync(t):
     sens     = t.get("sensitive", False)
-    layout   = t.get("layout", "dark")
     material = enrich.gather(t, lang=t.get("wiki_lang","en"))
     copy     = llm.localize(t, material=material, sensitive=sens)
-    img      = images.fetch_image(t.get("title",""), t.get("category","기타"))
-    img_url  = img["url"] if img else None
-    slug     = re.sub(r"[^a-z0-9]+"," ",t.get("title","trend").lower())[:24].strip().replace(" ","-") or "trend"
-    paths    = render_carousel.render(copy, OUT, sensitive=sens,
-                                      slug=slug, layout=layout, img_url=img_url)
+    n_slides = len(copy.get("slides", []))
+    title    = t.get("title","")
+    cat      = t.get("category","기타")
+    bg       = images.fetch_bg(title, cat)
+    simgs    = images.fetch_slide_images(title, cat, n_slides)
+    slug     = re.sub(r"[^a-z0-9]+"," ",title.lower())[:24].strip().replace(" ","-") or "trend"
+    paths    = render_carousel.render(copy, OUT, sensitive=sens, slug=slug,
+                                      bg_url=(bg or {}).get("url"), slide_imgs=simgs)
     urls     = ["/outputs/"+os.path.basename(p) for p in paths]
     src      = material.get("url","")
     caption  = (f"{copy['ko_title']}\n\n{copy.get('why_ko','')}\n\n"
                 f"(사실 전달 · 출처 확인{' · '+src if src else ''})")
     return {"copy": copy, "images": urls, "caption": caption,
-            "img_credit": img, "layout": layout}
+            "img_credit": bg, "bg_url": (bg or {}).get("url"),
+            "slide_imgs": [ (s or {}).get("url") for s in simgs ]}
 
 @app.post("/api/generate")
 async def generate(req: Request):
@@ -51,12 +54,13 @@ async def generate(req: Request):
 def _rerender_sync(t):
     copy     = {"ko_title": t.get("ko_title",""), "why_ko": t.get("why_ko",""),
                 "slides": t.get("slides",[])}
-    img_url  = t.get("img_url")
-    layout   = t.get("layout","dark")
     sens     = t.get("sensitive", False)
+    bg_url   = t.get("bg_url") or t.get("img_url")
+    simg_urls= t.get("slide_imgs") or []
+    simgs    = [ (dict(url=u) if u else None) for u in simg_urls ]
     slug     = re.sub(r"[^a-z0-9]+"," ",t.get("ko_title","edit").lower())[:20].strip().replace(" ","-")+"-ed"
-    paths    = render_carousel.render(copy, OUT, sensitive=sens,
-                                      slug=slug, layout=layout, img_url=img_url)
+    paths    = render_carousel.render(copy, OUT, sensitive=sens, slug=slug,
+                                      bg_url=bg_url, slide_imgs=simgs)
     return {"images": ["/outputs/"+os.path.basename(p) for p in paths]}
 
 @app.post("/api/rerender")

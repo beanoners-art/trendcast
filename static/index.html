@@ -204,8 +204,10 @@ function editorEl(d,it){
           ${slides.map((_,i)=>`<button class="stab${i===curSlide?" on":""}" data-si="${i}">${i+1}장</button>`).join("")}
         </div>
         <!-- text editor -->
-        <div class="field-row"><label>텍스트 (제목↵부가설명)</label></div>
-        <textarea class="field" id="txt-${it.rank}">${slides[curSlide]||""}</textarea>
+        <div class="field-row"><label>제목</label></div>
+        <textarea class="field" id="ttl-${it.rank}" style="min-height:44px">${(slides[curSlide]||{}).title||""}</textarea>
+        <div class="field-row" style="margin-top:8px"><label>본문 (**볼드** 마커 사용 가능)</label></div>
+        <textarea class="field" id="txt-${it.rank}" style="min-height:120px">${(slides[curSlide]||{}).body||""}</textarea>
         <!-- image swap -->
         <div class="img-panel">
           <div class="field-row" style="margin-top:10px">
@@ -229,10 +231,12 @@ function editorEl(d,it){
     wrap.querySelectorAll(".stab").forEach(b=>{
       b.onclick=()=>{
         const ta=wrap.querySelector(`#txt-${it.rank}`);
-        slides[curSlide]=ta.value;
+        const tt=wrap.querySelector(`#ttl-${it.rank}`);
+        slides[curSlide]={...(slides[curSlide]||{}),title:tt.value,body:ta.value};
         curSlide=parseInt(b.dataset.si);
         wrap.querySelectorAll(".stab").forEach(x=>x.classList.remove("on")); b.classList.add("on");
-        ta.value=slides[curSlide]||"";
+        tt.value=(slides[curSlide]||{}).title||"";
+        ta.value=(slides[curSlide]||{}).body||"";
       };
     });
     // preview click highlight
@@ -249,12 +253,14 @@ function editorEl(d,it){
     const applyBtn=wrap.querySelector(`#apply-${it.rank}`);
     if(applyBtn) applyBtn.onclick=async()=>{
       const ta=wrap.querySelector(`#txt-${it.rank}`);
-      slides[curSlide]=ta.value;
+      const tt=wrap.querySelector(`#ttl-${it.rank}`);
+      slides[curSlide]={...(slides[curSlide]||{}),title:tt.value,body:ta.value};
       applyBtn.disabled=true; applyBtn.textContent="재생성 중…";
       const res=await fetch("/api/rerender",{method:"POST",
         headers:{"Content-Type":"application/json"},
         body:JSON.stringify({slides,ko_title:d.copy.ko_title,why_ko:d.copy.why_ko,
-          img_url:imgUrl, layout, sensitive:it.sensitive||false})}).then(r=>r.json());
+          bg_url:imgUrl||d.bg_url, slide_imgs:d.slide_imgs||[],
+          sensitive:it.sensitive||false})}).then(r=>r.json());
       // update preview
       const shots=wrap.querySelector(`#shots-${it.rank}`);
       if(shots) shots.innerHTML=res.images.map((u,i)=>`<img src="${u}?t=${Date.now()}" class="${i===0?"active":""}" data-i="${i}">`).join("");

@@ -1,101 +1,102 @@
 # -*- coding: utf-8 -*-
 """
-재료(위키 리드 + 관련 뉴스) → 숫자·인물·시점이 살아있는 한국어 카드뉴스 카피.
-ANTHROPIC_API_KEY 있으면 Claude 실호출, 없으면 재료 기반 템플릿 폴백.
-민감 주제는 '사실 전달만, 평가 없음' 모드.
+카피 생성 v3 — 에디토리얼 문단형.
+슬라이드 구조: {"title": "...", "body": "문단 (**볼드** 마커 포함)", "img": true/false}
+재료: Guardian 전문 + 위키 + NewsAPI + Reddit/HN 반응.
 """
 import os, json, re
 
-MODEL = os.environ.get("CLAUDE_MODEL", "claude-sonnet-5")
+MODEL = lambda: os.environ.get("CLAUDE_MODEL", "claude-sonnet-4-6")
 
-SYS = """너는 한국어 카드뉴스 에디터다. 주어진 '재료'(위키 리드, 관련 뉴스)에서 구체적 사실을 뽑아
-카드뉴스를 만든다.
+SYS = """너는 한국 매거진 에디터다. 주어진 재료(기사 전문·위키·커뮤니티 반응)로
+인스타그램 카드뉴스를 만든다. 톤은 '~습니다/~에요'를 섞은 자연스러운 에디토리얼체.
 
-원칙:
-- 재료에 실제로 있는 인물·직책·날짜·숫자·작품명을 최대한 구체적으로 살린다. (예: 감독 이름, 출연진, 개봉 연도, 금액, 수치)
-- 재료에 없는 사실·숫자는 절대 지어내지 않는다. 모르면 쓰지 않는다.
-- 직역 금지, 자연스러운 한국어. 번역투 금지.
-- 개인적 평가·추측·선동 금지. '이런 일이 있었다' 수준의 사실 전달.
-- 민감 주제(사고·사망·재난·정치)는 특히 중립적 사실만.
-- 과장·클릭베이트 금지.
+각 슬라이드 형식:
+- title: 짧고 강한 헤드라인 (10~18자, 줄바꿈 가능: \\n 사용)
+- body: 4~7문장의 문단. 핵심 단어는 **볼드**로 감싼다 (한 문단에 2~4개).
+  재료에 있는 구체적 사실(인물 이름·직책·날짜·금액·수치·기관명)을 반드시 살린다.
+  재료에 없는 사실·숫자는 절대 지어내지 않는다.
+- img: 이 슬라이드에 사진이 들어가면 좋은지 true/false
 
-분량(중요):
-- 재료가 풍부하면 최대 10장까지 만든다.
-- 재료가 얕으면 억지로 늘리지 말고 6장으로 줄인다. 같은 말 반복·빈 문장으로 채우기 금지.
-- 즉 6~10장 사이에서 재료의 실제 정보량에 맞춰 자연스럽게 정한다.
+구성 (재료가 풍부하면 8~10장, 얕으면 6장):
+1. 표지: title만 강렬하게, body는 1~2문장 훅
+2. 무슨 일: 사건 핵심을 문단으로
+3~4. 상세 사실: 인물·숫자·타임라인 (재료의 구체 정보 총동원)
+5~6. 배경·맥락: 어쩌다 이렇게 됐고 왜 중요한가
+7. 반응: 재료에 Reddit/HN 반응이 있으면 "커뮤니티에선 ~" 문단 (없으면 생략)
+8. 전망 or 알아둘 점
+9. 마무리: 요약 + 출처 확인 유도. 마지막 문장은 독자 참여 질문 (예: "여러분 생각은 어떤가요?")
 
-슬라이드 구성(재료가 충분할 때 10장 예시, 부족하면 앞쪽 위주로 압축):
-1) 표지: 무슨 이슈인지 한눈에 (제목 + 한 줄)
-2) 한 줄 요약: 핵심을 한 문장으로
-3) 핵심 인물/주체: 누가 (이름·직책 구체적으로)
-4) 인물의 역할·관계: 그들이 무엇을 했나
-5) 숫자·규모 팩트: 연도·수치·금액·규모
-6) 시점·타임라인: 언제 일어났나/진행됐나
-7) 배경: 어쩌다 이렇게 됐나
-8) 왜 지금 화제인가
-9) 알아둘 포인트: 놓치기 쉬운 사실
-10) 마무리: 출처 확인 유도(평가 없음)
+규칙:
+- 직역·번역투 금지. 과장·클릭베이트 금지.
+- 개인 평가·선동 금지. 사실 전달만. 민감 주제(사고·사망·재난·정치)는 특히 중립.
+- 볼드는 **단어** 형식만 사용.
 
-각 슬라이드는 '제목\\n부가설명' 형식 문자열. 제목은 짧게, 부가설명은 1문장.
-반드시 아래 JSON만 출력. 다른 텍스트 금지.
-{"ko_title":"...","why_ko":"...","slides":["...", "... (6~10개)"]}"""
+JSON만 출력:
+{"ko_title":"...","why_ko":"...","slides":[{"title":"...","body":"...","img":true}, ...]}"""
 
 def _material_text(m):
-    lines = [f"제목: {m.get('title','')}"]
-    if m.get("description"): lines.append(f"설명: {m['description']}")
-    if m.get("headline"):    lines.append(f"헤드라인: {m['headline']}")
-    if m.get("lead"):        lines.append(f"위키 리드:\n{m['lead']}")
+    L = [f"제목: {m.get('title','')}"]
+    if m.get("description"): L.append(f"설명: {m['description']}")
+    if m.get("headline"):    L.append(f"트렌드 헤드라인: {m['headline']}")
+    if m.get("lead"):        L.append(f"\n[위키 배경]\n{m['lead']}")
+    for i, a in enumerate(m.get("guardian", [])[:3], 1):
+        L.append(f"\n[기사{i}] {a['title']} ({a['section']}, {a['date']})\n{a['body'][:2000]}")
     if m.get("news"):
-        lines.append("관련 뉴스:")
+        L.append("\n[추가 헤드라인]")
         for a in m["news"]:
-            line = f" - [{a.get('date','')}] {a.get('domain','')}: {a.get('title','')}"
-            if a.get("body"):
-                line += f"\n   요약: {a['body'][:200]}"
-            lines.append(line)
-    return "\n".join(lines)
+            L.append(f"- [{a.get('date','')}] {a.get('domain','')}: {a.get('title','')} — {a.get('body','')[:150]}")
+    if m.get("reddit"):
+        L.append("\n[Reddit 반응]")
+        for p in m["reddit"]:
+            L.append(f"- r/{p['sub']} ({p['ups']:,}↑ {p['comments']:,}💬): {p['title'][:100]}")
+    if m.get("hn"):
+        L.append("\n[Hacker News 반응]")
+        for h in m["hn"]:
+            L.append(f"- ({h['points']}pts {h['comments']}💬): {h['title'][:100]}")
+    return "\n".join(L)
 
 def _anthropic(material, sensitive):
+    key = os.environ.get("ANTHROPIC_API_KEY", "")
+    if not key: return None
     try:
         from anthropic import Anthropic
-    except Exception:
-        return None
-    key = os.environ.get("ANTHROPIC_API_KEY")
-    if not key:
-        return None
-    try:
         client = Anthropic(api_key=key)
-        user = (f"[재료]\n{_material_text(material)}\n\n"
-                f"[민감 주제 여부] {sensitive}\n"
-                f"위 재료에서 구체적 사실(인물·직책·연도·숫자)을 뽑아 카드뉴스로. "
-                f"재료가 풍부하면 최대 10장, 얕으면 6장. 재료에 없는 건 쓰지 마라.")
-        msg = client.messages.create(model=MODEL, max_tokens=1300,
+        user = (f"[재료]\n{_material_text(material)[:9000]}\n\n"
+                f"[민감 주제] {sensitive}\n"
+                f"위 재료로 에디토리얼 카드뉴스를 만들어라. 구체적 사실을 최대한 살려라.")
+        msg = client.messages.create(model=MODEL(), max_tokens=3000,
                                      system=SYS, messages=[{"role": "user", "content": user}])
         txt = "".join(b.text for b in msg.content if b.type == "text")
         txt = re.sub(r"^```json|```$", "", txt.strip()).strip()
         data = json.loads(txt)
-        if data.get("slides"):
+        if data.get("slides") and isinstance(data["slides"][0], dict):
             return data
     except Exception as e:
-        print("[llm] anthropic err", e)
+        print("[llm] err", e)
     return None
 
 def _fallback(material, sensitive):
-    """키 없을 때: 재료(위키 리드)를 문장 단위로 쪼개 재료량만큼만 슬라이드 구성(6~10)."""
-    lead = material.get("lead", "") or material.get("headline", "")
-    sents = re.split(r"(?<=[.!?]) +", lead)
-    sents = [s.strip() for s in sents if len(s.strip()) > 20][:8]  # 최대 8개 사실
+    """키 없음/실패 시: 재료 문장으로 구조화 슬라이드 구성."""
+    src = ""
+    for a in material.get("guardian", []):
+        src += a.get("body", "") + " "
+    src = src or material.get("lead", "") or material.get("headline", "")
+    sents = [s.strip() for s in re.split(r"(?<=[.!?]) +", src) if len(s.strip()) > 30][:14]
     t = material.get("title", "")
+    slides = [dict(title=t, body=(sents[0] if sents else "무슨 일이 있었는지 정리했습니다."), img=True)]
+    # 2문장씩 묶어 문단화
+    for i in range(1, len(sents)-1, 2):
+        para = " ".join(sents[i:i+2])
+        slides.append(dict(title=para[:20]+"…", body=para, img=(len(slides) % 2 == 0)))
+        if len(slides) >= 9: break
     note = "사실 관계만 정리했습니다. 출처를 직접 확인하세요." if sensitive \
         else "핵심만 정리했습니다. 자세한 내용은 출처에서 확인하세요."
-    slides = [f"{t}\n무슨 일이 있었나"]
-    for s in sents:
-        head = s[:34] + ("…" if len(s) > 34 else "")
-        slides.append(f"{head}\n{s}")
-    # 재료가 얕으면 6장 미만일 수 있으니 최소 표지+마무리만 보장, 억지 반복 없음
-    slides.append(note)
+    slides.append(dict(title="마무리", body=note + " 여러분 생각은 어떤가요?", img=False))
     return {"ko_title": t, "why_ko": material.get("headline", ""),
             "slides": slides[:10], "_fallback": True}
 
 def localize(topic, material=None, sensitive=False):
-    material = material or {"title": topic.get("title", ""), "headline": topic.get("headline", "")}
+    material = material or {"title": topic.get("title", ""),
+                            "headline": topic.get("headline", "")}
     return _anthropic(material, sensitive) or _fallback(material, sensitive)
