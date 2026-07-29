@@ -224,7 +224,11 @@ Give a slight boost to topics relevant to Korea or Asia. Output ONLY a JSON arra
             messages=[{"role":"user","content":f"Rate these:\n{topics}"}]
         )
         txt = "".join(b.text for b in msg.content if b.type=="text").strip()
+        if not txt:
+            raise ValueError("empty response")
         txt = _re2.sub(r"^```json|```$","",txt).strip()
+        m = _re2.search(r"\[.*?\]", txt, _re2.S)
+        txt = m.group(0) if m else txt
         scores = _json.loads(txt)
         for i, c in enumerate(items):
             c["big_score"] = scores[i] if i < len(scores) else 5
@@ -347,7 +351,13 @@ def run(geo="GLOBAL_KR", category="전체", n=6, wiki_lang="en"):
     ranked = [c for c in candidates if c.get("big_score", 7) >= 7] + ranked[15:]
     ranked = sorted(ranked[:20], key=lambda x: (x.get("big_score",5), x["final"]), reverse=True)
     top = ranked[:n]
-    top = _claude_translate_titles(top)   # 제목 한글화
+    try:
+        top = _claude_translate_titles(top)
+    except Exception as e:
+        print("[translate] failed:", e)
+        for c in top:
+            c.setdefault("title_ko", c["title"])
+            c.setdefault("headline_ko", c.get("headline",""))
     out = []
     for i, c in enumerate(top, 1):
         out.append(dict(
@@ -448,6 +458,8 @@ def fetch_naver_news(query="오늘 주요 뉴스", n=10):
                                     magnitude=50.0,
                                     headline=desc[:100], geo="KR",
                                     url=item.get("originallink","")))
+        elif r.status_code == 401:
+            print("[naver_news] 401 — developers.naver.com 앱 설정에서 '검색' API를 사용 API에 추가하세요")
         else:
             print("[naver_news] status", r.status_code)
     except Exception as e:

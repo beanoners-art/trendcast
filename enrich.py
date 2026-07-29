@@ -183,6 +183,8 @@ def naver_news_articles(query, n=5):
                     arts.append(dict(title=title, domain="네이버뉴스",
                                      date="", url=item.get("originallink",""),
                                      body=desc[:300]))
+        elif r.status_code == 401:
+            print("[naver_news_enrich] 401 — 네이버 앱에 '검색' API 권한을 추가하세요 (developers.naver.com)")
         else:
             print("[naver_news_enrich] status", r.status_code)
     except Exception as e:
@@ -244,3 +246,11 @@ def gather(topic, lang="en"):
         "url": wiki["url"] or topic.get("url", ""),
         "has_body": bool(wiki["lead"] or all_articles or newsapi),
     }
+
+
+def _naver_search_available():
+    """네이버 앱에 검색 API가 활성화됐는지 확인."""
+    import os as _os
+    return bool(_os.environ.get("NAVER_CLIENT_ID") and
+                _os.environ.get("NAVER_CLIENT_SECRET") and
+                _os.environ.get("NAVER_SEARCH_ENABLED","true").lower() != "false")
