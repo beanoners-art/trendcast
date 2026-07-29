@@ -1,19 +1,51 @@
 # -*- coding: utf-8 -*-
-import os, re
-from fastapi import FastAPI, Request
+import os, re, secrets
+from fastapi import FastAPI, Request, Depends, HTTPException, status
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.concurrency import run_in_threadpool
+from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from dotenv import load_dotenv
 
 import engine, llm, render_carousel, publish, enrich, images
 
 load_dotenv()
+
+# ── 간단 비밀번호 인증 (미들웨어) ──────────────────
+# APP_USERNAME / APP_PASSWORD 가 설정된 경우에만 활성화.
+# /outputs (생성 이미지)는 인스타 발행용 공개 URL이 필요하므로 인증 제외.
+import base64 as _b64
+_PUBLIC_PREFIXES = ("/outputs",)
+
+def _check_basic(header):
+    user = os.environ.get("APP_USERNAME", "")
+    pw   = os.environ.get("APP_PASSWORD", "")
+    if not (user and pw):
+        return True
+    if not header or not header.startswith("Basic "):
+        return False
+    try:
+        decoded = _b64.b64decode(header[6:]).decode("utf-8")
+        u, p = decoded.split(":", 1)
+    except Exception:
+        return False
+    return secrets.compare_digest(u, user) and secrets.compare_digest(p, pw)
 BASE = os.path.dirname(__file__)
 OUT  = os.path.join(BASE, "outputs")
 os.makedirs(OUT, exist_ok=True)
 
 app = FastAPI(title="Trendcast")
+
+@app.middleware("http")
+async def _auth_mw(request: Request, call_next):
+    path = request.url.path
+    if any(path.startswith(p) for p in _PUBLIC_PREFIXES):
+        return await call_next(request)
+    if not _check_basic(request.headers.get("Authorization", "")):
+        from fastapi.responses import Response
+        return Response(status_code=401, content="인증이 필요합니다",
+                        headers={"WWW-Authenticate": "Basic"})
+    return await call_next(request)
 app.mount("/outputs", StaticFiles(directory=OUT),                     name="outputs")
 app.mount("/static",  StaticFiles(directory=os.path.join(BASE,"static")), name="static")
 
