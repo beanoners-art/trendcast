@@ -250,6 +250,7 @@ def _claude_translate_titles(items):
     try:
         from anthropic import Anthropic
         client = Anthropic(api_key=key)
+        print(f"[translate] calling model={_os.environ.get('CLAUDE_MODEL','claude-sonnet-4-6')} for {len(items)} items")
         entries = []
         for i, c in enumerate(items):
             hl = (c.get("headline") or "")[:100]
@@ -258,19 +259,23 @@ def _claude_translate_titles(items):
         msg = client.messages.create(
             model=_os.environ.get("CLAUDE_MODEL", "claude-sonnet-4-6"),
             max_tokens=1500,
-            system="""Translate each item's title and summary into natural Korean.
+            system="""You translate news items into natural Korean for a Korean audience.
+For EACH item you MUST translate BOTH the title AND the summary(요약) into Korean.
+The summary must NOT stay in English — always translate it fully to Korean.
 Keep proper nouns (people/brand/place names) in common Korean form.
-You MUST return EXACTLY one object per input index, in order.
-Output ONLY a JSON array like:
-[{"i":0,"title":"...","headline":"..."},{"i":1,"title":"...","headline":"..."}]
-Include every index from 0 to the last. If summary empty, use "".""",
+Return EXACTLY one object per input index, in order, covering every index.
+Output ONLY a JSON array, no other text:
+[{"i":0,"title":"한국어 제목","headline":"한국어 요약 문장"},{"i":1,"title":"...","headline":"..."}]
+Only use "" for headline if the original summary was truly empty.""",
             messages=[{"role": "user", "content": lst}]
         )
         txt = "".join(b.text for b in msg.content if b.type == "text").strip()
+        print(f"[translate] raw response len={len(txt)} preview={txt[:120]!r}")
         txt = _re3.sub(r"^```json|```$", "", txt).strip()
         m = _re3.search(r"\[.*\]", txt, _re3.S)
         if m: txt = m.group(0)
         results = _json.loads(txt)
+        print(f"[translate] parsed {len(results)} items for {len(items)} inputs")
         # 인덱스 기반 매칭 (순서 어긋나도 안전)
         by_i = {}
         for r in results:
@@ -280,8 +285,11 @@ Include every index from 0 to the last. If summary empty, use "".""",
             r = by_i.get(i)
             if r:
                 if r.get("title"):    c["title_ko"] = r["title"]
-                c["headline_ko"] = r.get("headline", "") or c.get("headline", "")
-            # 없으면 이미 setdefault로 원문 유지됨
+                hk = (r.get("headline") or "").strip()
+                # 번역된 요약이 있으면 사용, 없으면 빈값(영어 노출 방지)
+                c["headline_ko"] = hk if hk else ""
+            else:
+                c["headline_ko"] = ""  # 매칭 실패 시 영어 대신 빈값
     except Exception as e:
         print("[translate] err", e)
     return items
