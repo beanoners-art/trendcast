@@ -171,10 +171,14 @@ def naver_news_articles(query, n=5):
             headers={"X-Naver-Client-Id": cid, "X-Naver-Client-Secret": sec,
                      "User-Agent": "trendcast/0.3"}, timeout=10)
         if r.status_code == 200:
-            import re as _re2
+            import re as _re2, html as _html
+            def _clean(t):
+                t = _html.unescape(t or "")
+                t = _re2.sub(r"<[^>]+>", "", t)
+                return t.strip()
             for item in r.json().get("items", [])[:n]:
-                title = _re2.sub(r"<[^>]+>","", item.get("title","")).strip()
-                desc  = _re2.sub(r"<[^>]+>","", item.get("description","")).strip()
+                title = _clean(item.get("title",""))
+                desc  = _clean(item.get("description",""))
                 if title:
                     arts.append(dict(title=title, domain="네이버뉴스",
                                      date="", url=item.get("originallink",""),

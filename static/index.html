@@ -139,7 +139,7 @@ function cardEl(it){
       <span>상승률 <b>${vel}</b></span>
       <span>소스 <b>${it.sources.join(", ")}</b></span>
     </div>
-    ${it.headline?`<div class="headline">"${esc(it.headline)}"</div>`:""}
+    ${(it.headline_ko||it.headline)?`<div class="headline">"${esc(it.headline_ko||it.headline)}"</div>`:""}
     ${it.sensitive?'<div class="note">※ 민감 주제 — 사실 전달만 생성, 발행은 직접 판단하세요.</div>':""}
     <div class="act">
       <button class="btn gen">카드뉴스 만들기</button>

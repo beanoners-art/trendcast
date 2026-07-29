@@ -234,30 +234,47 @@ Give a slight boost to topics relevant to Korea or Asia. Output ONLY a JSON arra
     return items
 
 def _claude_translate_titles(items):
-    """트렌드 카드 제목을 짧은 한국어로 번역. 키 없으면 원문 유지."""
+    """트렌드 카드 제목+헤드라인을 한국어로 번역. 키 없으면 원문 유지."""
     import os as _os, json as _json, re as _re3
     key = _os.environ.get("ANTHROPIC_API_KEY", "")
     if not key or not items:
-        for c in items: c["title_ko"] = c["title"]
+        for c in items:
+            c["title_ko"] = c["title"]
+            c["headline_ko"] = c.get("headline", "")
         return items
     try:
         from anthropic import Anthropic
         client = Anthropic(api_key=key)
-        lst = "\n".join(f"{i+1}. {c['title']}" for i, c in enumerate(items))
+        # 제목+헤드라인을 함께 번역 (한 번 호출로 비용 절약)
+        entries = []
+        for i, c in enumerate(items):
+            hl = (c.get("headline") or "")[:80]
+            entries.append(f'{i+1}. 제목: {c["title"]} | 요약: {hl}')
+        lst = "\n".join(entries)
         msg = client.messages.create(
             model=_os.environ.get("CLAUDE_MODEL", "claude-sonnet-4-6"),
-            max_tokens=600,
-            system="Translate each item to a short natural Korean title (keep proper nouns; people/brand names can stay or use common Korean form). Output ONLY a JSON array of strings, same order.",
+            max_tokens=1000,
+            system="""Translate each item's title and summary to natural Korean.
+Keep proper nouns (people/brand/place names) in their common Korean form.
+Output ONLY a JSON array of objects: [{"title":"...","headline":"..."}, ...]
+Same order as input. If summary is empty, output empty string.""",
             messages=[{"role": "user", "content": lst}]
         )
         txt = "".join(b.text for b in msg.content if b.type == "text").strip()
         txt = _re3.sub(r"^```json|```$", "", txt).strip()
-        kos = _json.loads(txt)
+        results = _json.loads(txt)
         for i, c in enumerate(items):
-            c["title_ko"] = kos[i] if i < len(kos) else c["title"]
+            if i < len(results):
+                c["title_ko"]    = results[i].get("title", c["title"])
+                c["headline_ko"] = results[i].get("headline", c.get("headline",""))
+            else:
+                c["title_ko"]    = c["title"]
+                c["headline_ko"] = c.get("headline","")
     except Exception as e:
         print("[translate] err", e)
-        for c in items: c["title_ko"] = c["title"]
+        for c in items:
+            c["title_ko"] = c["title"]
+            c["headline_ko"] = c.get("headline","")
     return items
 
 # ---------- 점수 조립 ----------
@@ -335,7 +352,9 @@ def run(geo="GLOBAL_KR", category="전체", n=6, wiki_lang="en"):
     for i, c in enumerate(top, 1):
         out.append(dict(
             rank=i, title=c["title"], title_ko=c.get("title_ko", c["title"]),
-            headline=c.get("headline", ""), url=c.get("url", ""),
+            headline=c.get("headline", ""),
+            headline_ko=c.get("headline_ko", c.get("headline","")),
+            url=c.get("url", ""),
             category=c["category"], sensitive=c["sensitive"],
             trend_index=c["trend_index"], confidence=c["confidence"],
             final=c["final"], velocity=c["velocity"], sources=sorted(c["sources"]),
@@ -417,10 +436,13 @@ def fetch_naver_news(query="오늘 주요 뉴스", n=10):
                      "User-Agent": "trendcast/0.3"},
             timeout=10)
         if r.status_code == 200:
-            import re as _re2
+            import re as _re2, html as _html2
+            def _nc(t):
+                t = _html2.unescape(t or "")
+                return _re2.sub(r"<[^>]+>","",t).strip()
             for item in r.json().get("items", [])[:n]:
-                title = _re2.sub(r"<[^>]+>","", item.get("title","")).strip()
-                desc  = _re2.sub(r"<[^>]+>","", item.get("description","")).strip()
+                title = _nc(item.get("title",""))
+                desc  = _nc(item.get("description",""))
                 if title:
                     out.append(dict(title=title, source="naver_news",
                                     magnitude=50.0,
@@ -448,12 +470,16 @@ def fetch_kakao_news(query="오늘 뉴스", n=5):
                      "User-Agent": "trendcast/0.3"},
             timeout=10)
         if r.status_code == 200:
+            import re as _re3, html as _html3
+            def _kc(t):
+                t = _html3.unescape(t or "")
+                return _re3.sub(r"<[^>]+>","",t).strip()
             for d in r.json().get("documents",[])[:n]:
-                title = d.get("title","").replace("<b>","").replace("</b>","").strip()
+                title = _kc(d.get("title",""))
                 if title:
                     out.append(dict(title=title, source="kakao_news",
                                     magnitude=45.0,
-                                    headline=(d.get("contents","") or "")[:100],
+                                    headline=_kc(d.get("contents",""))[:100],
                                     geo="KR", url=d.get("url","")))
         else:
             print("[kakao_news] status", r.status_code)
