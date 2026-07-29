@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 import os, re, secrets
 from fastapi import FastAPI, Request, Depends, HTTPException, status
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.concurrency import run_in_threadpool
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
@@ -46,8 +46,17 @@ async def _auth_mw(request: Request, call_next):
         return Response(status_code=401, content="인증이 필요합니다",
                         headers={"WWW-Authenticate": "Basic"})
     return await call_next(request)
-app.mount("/outputs", StaticFiles(directory=OUT),                     name="outputs")
 app.mount("/static",  StaticFiles(directory=os.path.join(BASE,"static")), name="static")
+
+@app.get("/outputs/{fname}")
+def serve_output(fname: str):
+    # 인스타/스레드가 가져갈 수 있는 공개 이미지 서빙 (인증 예외)
+    safe = os.path.basename(fname)
+    p = os.path.join(OUT, safe)
+    if os.path.isfile(p):
+        media = "image/jpeg" if safe.lower().endswith((".jpg",".jpeg")) else "image/png"
+        return FileResponse(p, media_type=media)
+    return JSONResponse({"detail": "not found"}, status_code=404)
 
 @app.get("/", response_class=HTMLResponse)
 def home():
