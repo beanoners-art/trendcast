@@ -34,11 +34,16 @@ def _err(resp):
     return resp.text[:200]
 
 def _is_transient(j):
-    """Meta 응답이 일시적 오류인지 판단 (재시도 대상). 영구 오류(9004 등)는 False."""
+    """Meta 응답이 재시도 대상인지 판단.
+    9004/2207052('media could not be fetched')는 is_transient=False로 오지만,
+    유효한 URL에도 Meta fetch가 간헐적으로 실패하는 2026년 현상이라 재시도 대상에 포함한다.
+    (URL·이미지가 실제로 유효함은 외부에서 검증됨: 200 image/jpeg 1080x1350 4:5 JPEG)"""
     e = j.get("error", {}) if isinstance(j, dict) else {}
     if e.get("is_transient"):
         return True
-    if e.get("code") in (-2, 1, 2, 4):           # 일시적/과부하 계열
+    if e.get("code") in (-2, 1, 2, 4):               # 일시적/과부하 계열
+        return True
+    if e.get("code") == 9004 or e.get("error_subcode") == 2207052:  # 간헐적 fetch 실패
         return True
     msg = (e.get("message") or "").lower()
     return ("timeout" in msg or "try again" in msg or "temporarily" in msg)
@@ -81,11 +86,11 @@ def publish_instagram(image_urls, caption):
     urls = [_abs(u, c["base"]) for u in image_urls]
     print("[publish-ig] image urls:", urls)
     try:
-        # 1) 각 이미지 캐러셀 아이템 컨테이너 (일시적 오류는 백오프 재시도)
+        # 1) 각 이미지 캐러셀 아이템 컨테이너 (일시적/간헐적 9004는 백오프 재시도)
         children = []
         for u in urls:
             j = None; r = None
-            for attempt in range(3):
+            for attempt in range(5):             # 이미지당 최대 5번 (간헐적 fetch 실패 대비)
                 r = requests.post(f"{GRAPH}/{c['ig']}/media",
                     data={"image_url": u, "is_carousel_item": "true",
                           "access_token": c["token"]}, timeout=60)
@@ -94,12 +99,13 @@ def publish_instagram(image_urls, caption):
                 if "id" in j:
                     break
                 if not _is_transient(j):
-                    break                        # 영구 오류(9004 등)면 즉시 중단
-                time.sleep(2 * (attempt + 1))    # 2s, 4s 백오프
+                    break                        # 진짜 영구 오류면 즉시 중단
+                time.sleep(3 * (attempt + 1))    # 3s, 6s, 9s, 12s 백오프
             if not j or "id" not in j:
                 return {"status": "error", "platform": "instagram",
-                        "error": f"이미지 컨테이너 생성 실패: {_err(r)}", "image": u,
-                        "hint": "일시적이면 잠시 후 재시도, 반복되면 이미지 URL 접근성/JPG 여부 확인"}
+                        "error": f"이미지 컨테이너 생성 실패(재시도 후에도): {_err(r)}", "image": u,
+                        "hint": "URL·이미지는 유효함(외부검증). Meta fetch가 지속 실패하면 "
+                                "잠시 후 다시 시도하거나 앱/계정 상태 확인 필요"}
             children.append(j["id"])
         # 2) 캐러셀 컨테이너
         r = requests.post(f"{GRAPH}/{c['ig']}/media",
