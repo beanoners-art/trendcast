@@ -133,29 +133,35 @@ def image_search(q: str="", n: int=6):
     return {"results": images.search_images(q_en, n)}
 
 # ── 발행 이미지 외부 호스팅 (imgbb) ───────────────────
-def _upload_to_imgbb(filepath):
+def _upload_to_imgbb(filepath, tries=4):
     """발행용 JPG를 imgbb에 올려 Meta가 확실히 가져갈 수 있는 직접 URL을 반환.
-    IMGBB_API_KEY 미설정이거나 실패하면 None (→ 기존 /outputs URL로 폴백).
+    실패 시 백오프 두고 재시도(무료 한도/스로틀 대비). 최종 실패면 None.
 
-    railway 도메인(*.up.railway.app)을 Meta가 fetch 못 하는 문제(9004/2207052)를
-    우회하기 위한 것. imgbb는 Meta가 안정적으로 가져가는 CDN이다."""
+    railway 도메인(*.up.railway.app)을 Meta가 fetch 못 하는 문제(9004)를 우회하기 위한 것.
+    6장 연속 업로드 중 일부가 실패하면 railway로 폴백돼 그 이미지에서 9004가 나므로,
+    여기서 확실히 올리는 게 중요하다. imgbb는 Meta가 안정적으로 가져가는 CDN."""
     key = os.environ.get("IMGBB_API_KEY")
     if not key:
         return None
-    import base64, requests
+    import base64, requests, time
     try:
         with open(filepath, "rb") as f:
             b64 = base64.b64encode(f.read()).decode()
-        r = requests.post("https://api.imgbb.com/1/upload",
-                          data={"key": key, "image": b64}, timeout=60)
-        j = r.json()
-        if j.get("success"):
-            url = j["data"]["url"]           # 직접 이미지 URL (예: https://i.ibb.co/.../x.jpg)
-            print("[imgbb] 업로드 성공:", url)
-            return url
-        print("[imgbb] 업로드 실패:", j)
     except Exception as e:
-        print("[imgbb] 에러:", e)
+        print("[imgbb] 파일 읽기 실패:", e); return None
+    for attempt in range(tries):
+        try:
+            r = requests.post("https://api.imgbb.com/1/upload",
+                              data={"key": key, "image": b64}, timeout=60)
+            j = r.json()
+            if j.get("success"):
+                url = j["data"]["url"]           # 직접 이미지 URL (예: https://i.ibb.co/.../x.jpg)
+                print(f"[imgbb] 업로드 성공 (try {attempt+1}): {url}")
+                return url
+            print(f"[imgbb] 업로드 실패 (try {attempt+1}/{tries}):", j.get("error") or j)
+        except Exception as e:
+            print(f"[imgbb] 에러 (try {attempt+1}/{tries}):", e)
+        time.sleep(2 * (attempt + 1))            # 2s, 4s, 6s 백오프
     return None
 
 # ── 인스타 규격 리사이즈 (발행용 1080px JPG) ──────────
@@ -163,12 +169,17 @@ def _make_publish_images(image_urls):
     """2x PNG → 인스타 규격 1080px JPG로 변환.
     IMGBB_API_KEY가 있으면 imgbb에 올려 그 URL을 쓰고(권장),
     없으면 /outputs 로컬 URL로 폴백한다.
-    파일명은 발행마다 유니크(pub_<token>_...)라 Meta URL 캐시도 우회."""
+    파일명은 발행마다 유니크(pub_<token>_...)라 Meta URL 캐시도 우회.
+
+    반환: {"urls": [...], "error": str|None}
+      - imgbb 키가 설정돼 있는데 업로드에 최종 실패하면, railway URL로 폴백하면
+        어차피 9004가 나므로 폴백하지 않고 error를 담아 반환한다(원인 명확화)."""
     from PIL import Image
     import time
+    use_imgbb = bool(os.environ.get("IMGBB_API_KEY"))
     token = f"{int(time.time())}{secrets.token_hex(3)}"  # 발행마다 유니크
     out = []
-    for u in image_urls:
+    for idx, u in enumerate(image_urls):
         fname = os.path.basename(u)
         src = os.path.join(OUT, fname)
         if not os.path.exists(src):
@@ -183,13 +194,22 @@ def _make_publish_images(image_urls):
             pub_name = f"pub_{token}_" + os.path.splitext(fname)[0] + ".jpg"
             local_path = os.path.join(OUT, pub_name)
             im.save(local_path, "JPEG", quality=88)
-            # imgbb 우선, 실패/미설정 시 로컬 /outputs URL
-            hosted = _upload_to_imgbb(local_path)
-            out.append(hosted if hosted else "/outputs/" + pub_name)
+            if use_imgbb:
+                if idx > 0:
+                    time.sleep(0.7)              # 연속 업로드 스로틀 회피
+                hosted = _upload_to_imgbb(local_path)
+                if not hosted:
+                    # railway 폴백은 9004가 나므로, 폴백 대신 명확히 실패 처리
+                    return {"urls": [], "error": (
+                        f"imgbb 업로드 실패({idx+1}번째 이미지). 무료 한도/스로틀 가능성. "
+                        "잠시 후 재시도하거나 IMGBB_API_KEY 확인.")}
+                out.append(hosted)
+            else:
+                out.append("/outputs/" + pub_name)
         except Exception as e:
             print("[publish-resize] err", e)
             out.append(u)
-    return out
+    return {"urls": out, "error": None}
 
 # ── publish ───────────────────────────────────────────────
 @app.post("/api/publish")
@@ -197,7 +217,11 @@ async def do_publish(req: Request):
     d    = await req.json()
     plat = d.get("platform","instagram")
     # 발행용 규격 이미지 생성 (인스타/스레드 규격)
-    pub_imgs = await run_in_threadpool(_make_publish_images, d.get("images",[]))
+    made = await run_in_threadpool(_make_publish_images, d.get("images",[]))
+    pub_imgs = made.get("urls", [])
+    if made.get("error"):
+        return JSONResponse({"status": "error", "platform": plat,
+                             "error": f"이미지 호스팅 실패: {made['error']}"})
     res  = (publish.publish_threads(pub_imgs, d.get("caption","")) if plat=="threads"
             else publish.publish_instagram(pub_imgs, d.get("caption","")))
     return JSONResponse(res)
