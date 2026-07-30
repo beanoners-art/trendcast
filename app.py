@@ -48,9 +48,10 @@ async def _auth_mw(request: Request, call_next):
     return await call_next(request)
 app.mount("/static",  StaticFiles(directory=os.path.join(BASE,"static")), name="static")
 
-@app.get("/outputs/{fname}")
+@app.api_route("/outputs/{fname}", methods=["GET", "HEAD"])
 def serve_output(fname: str):
     # 인스타/스레드가 가져갈 수 있는 공개 이미지 서빙 (인증 예외)
+    # GET/HEAD 모두 허용 — Meta 이미지 수집기가 HEAD로 선점검(preflight)하기 때문.
     safe = os.path.basename(fname)
     p = os.path.join(OUT, safe)
     if os.path.isfile(p):
