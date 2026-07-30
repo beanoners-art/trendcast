@@ -3,7 +3,7 @@
 발행 어댑터 (반자동). 실제 발행은 자격증명 필요.
 필요 환경변수: META_ACCESS_TOKEN, IG_USER_ID, THREADS_USER_ID, PUBLIC_IMAGE_BASE
 """
-import os, requests
+import os, time, requests
 
 GRAPH   = "https://graph.facebook.com/v21.0"
 THREADS = "https://graph.threads.net/v1.0"
@@ -33,6 +33,28 @@ def _err(resp):
         pass
     return resp.text[:200]
 
+def _wait_ready(container_id, token, tries=20, delay=2):
+    """컨테이너가 발행 준비(status_code=FINISHED)될 때까지 폴링한다.
+    Meta는 컨테이너(특히 캐러셀)를 비동기로 처리하므로, 생성 직후 바로 media_publish를
+    호출하면 code 9007('Media ID is not available')이 난다. FINISHED 확인 후 발행할 것.
+    반환: (ok: bool, status_msg: str)"""
+    for _ in range(tries):
+        try:
+            r = requests.get(f"{GRAPH}/{container_id}",
+                params={"fields": "status_code,status", "access_token": token},
+                timeout=30)
+            j = r.json()
+            sc = j.get("status_code", "")
+            print(f"[publish-ig] container {container_id} status: {sc}")
+            if sc == "FINISHED":
+                return True, sc
+            if sc in ("ERROR", "EXPIRED"):
+                return False, f"{sc}: {j.get('status','')}"
+        except Exception as e:
+            print("[publish-ig] status poll err:", e)
+        time.sleep(delay)
+    return False, "TIMEOUT — 아직 IN_PROGRESS (이미지 규격/URL 확인 필요)"
+
 def publish_instagram(image_urls, caption):
     c = _creds()
     if not (c["token"] and c["ig"]):
@@ -40,9 +62,12 @@ def publish_instagram(image_urls, caption):
                 "reason": "META_ACCESS_TOKEN / IG_USER_ID 미설정",
                 "would_post": {"caption": caption, "images": image_urls}}
     if not c["base"]:
-        return {"status": "error", "platform": "instagram",
-                "error": "PUBLIC_IMAGE_BASE 미설정 — 인스타는 공개 이미지 URL이 필요합니다. "
-                         "Railway에 PUBLIC_IMAGE_BASE=https://<앱주소> 를 추가하세요."}
+        # imgbb 등 절대 URL(http...)만 넘어오면 base 없이도 동작하므로, 그 경우는 통과
+        if not all(u.startswith("http") for u in image_urls):
+            return {"status": "error", "platform": "instagram",
+                    "error": "PUBLIC_IMAGE_BASE 미설정 — 인스타는 공개 이미지 URL이 필요합니다. "
+                             "Railway에 PUBLIC_IMAGE_BASE=https://<앱주소> 를 추가하거나 "
+                             "IMGBB_API_KEY로 외부 호스팅을 사용하세요."}
     urls = [_abs(u, c["base"]) for u in image_urls]
     print("[publish-ig] image urls:", urls)
     try:
@@ -68,10 +93,22 @@ def publish_instagram(image_urls, caption):
             return {"status": "error", "platform": "instagram",
                     "error": f"캐러셀 생성 실패: {_err(r)}"}
         cont = j["id"]
-        # 3) 발행
-        pub = requests.post(f"{GRAPH}/{c['ig']}/media_publish",
-            data={"creation_id": cont, "access_token": c["token"]}, timeout=30)
-        pj = pub.json()
+        # 2.5) 발행 준비될 때까지 대기 (code 9007 방지)
+        ok, status = _wait_ready(cont, c["token"])
+        if not ok:
+            return {"status": "error", "platform": "instagram",
+                    "error": f"컨테이너 처리 대기 실패 ({status})",
+                    "hint": "이미지 규격(1080px, 4:5~1.91:1, JPG)·URL 접근성 확인"}
+        # 3) 발행 (혹시 모를 일시적 9007에 대비해 몇 번 재시도)
+        pj = {}
+        for attempt in range(3):
+            pub = requests.post(f"{GRAPH}/{c['ig']}/media_publish",
+                data={"creation_id": cont, "access_token": c["token"]}, timeout=30)
+            pj = pub.json()
+            if "id" in pj:
+                break
+            print(f"[publish-ig] media_publish 재시도 {attempt+1}/3: {pj}")
+            time.sleep(3)
         if "id" not in pj:
             return {"status": "error", "platform": "instagram",
                     "error": f"발행 실패: {_err(pub)}"}
@@ -94,6 +131,8 @@ def publish_threads(image_urls, text):
         if "id" not in j:
             return {"status": "error", "platform": "threads",
                     "error": f"스레드 컨테이너 실패: {_err(r)}"}
+        # 스레드도 발행 전 잠깐 대기 (권장)
+        time.sleep(3)
         pub = requests.post(f"{THREADS}/{c['th']}/threads_publish",
             data={"creation_id": j["id"], "access_token": c["token"]}, timeout=30)
         pj = pub.json()
