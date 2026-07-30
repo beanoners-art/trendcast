@@ -110,15 +110,60 @@ async def rerender(req: Request):
     return await run_in_threadpool(_rerender_sync, await req.json())
 
 # ── image search (editor swap) ────────────────────────────
+def _ko_to_en(q: str) -> str:
+    """한글 검색어를 영어로 번역 (Unsplash/Pexels는 영어 기반이라 한글은 결과가 빈약함).
+    한글이 없으면 원문 그대로. 번역 실패 시에도 원문을 반환해 검색은 계속 동작."""
+    if not q or not re.search(r"[가-힣]", q):
+        return q
+    try:
+        import requests
+        r = requests.get("https://translate.googleapis.com/translate_a/single",
+                         params={"client": "gtx", "sl": "ko", "tl": "en",
+                                 "dt": "t", "q": q}, timeout=8)
+        data = r.json()
+        en = "".join(seg[0] for seg in data[0] if seg and seg[0])
+        return en.strip() or q
+    except Exception as e:
+        print("[img-search] 번역 실패, 원문 사용:", e)
+        return q
+
 @app.get("/api/images/search")
 def image_search(q: str="", n: int=6):
-    return {"results": images.search_images(q, n)}
+    q_en = _ko_to_en(q)               # 한글이면 영어로 번역 후 검색
+    return {"results": images.search_images(q_en, n)}
+
+# ── 발행 이미지 외부 호스팅 (imgbb) ───────────────────
+def _upload_to_imgbb(filepath):
+    """발행용 JPG를 imgbb에 올려 Meta가 확실히 가져갈 수 있는 직접 URL을 반환.
+    IMGBB_API_KEY 미설정이거나 실패하면 None (→ 기존 /outputs URL로 폴백).
+
+    railway 도메인(*.up.railway.app)을 Meta가 fetch 못 하는 문제(9004/2207052)를
+    우회하기 위한 것. imgbb는 Meta가 안정적으로 가져가는 CDN이다."""
+    key = os.environ.get("IMGBB_API_KEY")
+    if not key:
+        return None
+    import base64, requests
+    try:
+        with open(filepath, "rb") as f:
+            b64 = base64.b64encode(f.read()).decode()
+        r = requests.post("https://api.imgbb.com/1/upload",
+                          data={"key": key, "image": b64}, timeout=60)
+        j = r.json()
+        if j.get("success"):
+            url = j["data"]["url"]           # 직접 이미지 URL (예: https://i.ibb.co/.../x.jpg)
+            print("[imgbb] 업로드 성공:", url)
+            return url
+        print("[imgbb] 업로드 실패:", j)
+    except Exception as e:
+        print("[imgbb] 에러:", e)
+    return None
 
 # ── 인스타 규격 리사이즈 (발행용 1080px JPG) ──────────
 def _make_publish_images(image_urls):
-    """2x PNG → 인스타 규격 1080px JPG로 변환, /outputs에 저장, 상대경로 반환.
-    발행마다 고유 파일명(pub_<token>_...)을 써서 Meta의 URL fetch 캐시를 우회한다.
-    (같은 파일명을 재사용하면 Meta가 과거 실패 결과를 캐싱해 계속 9004를 반환할 수 있음)"""
+    """2x PNG → 인스타 규격 1080px JPG로 변환.
+    IMGBB_API_KEY가 있으면 imgbb에 올려 그 URL을 쓰고(권장),
+    없으면 /outputs 로컬 URL로 폴백한다.
+    파일명은 발행마다 유니크(pub_<token>_...)라 Meta URL 캐시도 우회."""
     from PIL import Image
     import time
     token = f"{int(time.time())}{secrets.token_hex(3)}"  # 발행마다 유니크
@@ -136,8 +181,11 @@ def _make_publish_images(image_urls):
             target_h = int(target_w * h / w)
             im = im.resize((target_w, target_h), Image.LANCZOS)
             pub_name = f"pub_{token}_" + os.path.splitext(fname)[0] + ".jpg"
-            im.save(os.path.join(OUT, pub_name), "JPEG", quality=88)
-            out.append("/outputs/" + pub_name)
+            local_path = os.path.join(OUT, pub_name)
+            im.save(local_path, "JPEG", quality=88)
+            # imgbb 우선, 실패/미설정 시 로컬 /outputs URL
+            hosted = _upload_to_imgbb(local_path)
+            out.append(hosted if hosted else "/outputs/" + pub_name)
         except Exception as e:
             print("[publish-resize] err", e)
             out.append(u)
