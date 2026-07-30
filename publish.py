@@ -33,6 +33,16 @@ def _err(resp):
         pass
     return resp.text[:200]
 
+def _is_transient(j):
+    """Meta 응답이 일시적 오류인지 판단 (재시도 대상). 영구 오류(9004 등)는 False."""
+    e = j.get("error", {}) if isinstance(j, dict) else {}
+    if e.get("is_transient"):
+        return True
+    if e.get("code") in (-2, 1, 2, 4):           # 일시적/과부하 계열
+        return True
+    msg = (e.get("message") or "").lower()
+    return ("timeout" in msg or "try again" in msg or "temporarily" in msg)
+
 def _wait_ready(container_id, token, tries=20, delay=2):
     """컨테이너가 발행 준비(status_code=FINISHED)될 때까지 폴링한다.
     Meta는 컨테이너(특히 캐러셀)를 비동기로 처리하므로, 생성 직후 바로 media_publish를
@@ -71,18 +81,25 @@ def publish_instagram(image_urls, caption):
     urls = [_abs(u, c["base"]) for u in image_urls]
     print("[publish-ig] image urls:", urls)
     try:
-        # 1) 각 이미지 캐러셀 아이템 컨테이너
+        # 1) 각 이미지 캐러셀 아이템 컨테이너 (일시적 오류는 백오프 재시도)
         children = []
         for u in urls:
-            r = requests.post(f"{GRAPH}/{c['ig']}/media",
-                data={"image_url": u, "is_carousel_item": "true",
-                      "access_token": c["token"]}, timeout=30)
-            j = r.json()
-            print(f"[publish-ig] container resp for {u}: {j}")
-            if "id" not in j:
+            j = None; r = None
+            for attempt in range(3):
+                r = requests.post(f"{GRAPH}/{c['ig']}/media",
+                    data={"image_url": u, "is_carousel_item": "true",
+                          "access_token": c["token"]}, timeout=60)
+                j = r.json()
+                print(f"[publish-ig] container resp for {u} (try {attempt+1}): {j}")
+                if "id" in j:
+                    break
+                if not _is_transient(j):
+                    break                        # 영구 오류(9004 등)면 즉시 중단
+                time.sleep(2 * (attempt + 1))    # 2s, 4s 백오프
+            if not j or "id" not in j:
                 return {"status": "error", "platform": "instagram",
                         "error": f"이미지 컨테이너 생성 실패: {_err(r)}", "image": u,
-                        "hint": "이미지 URL이 공개 접근 가능한지, JPG인지 확인"}
+                        "hint": "일시적이면 잠시 후 재시도, 반복되면 이미지 URL 접근성/JPG 여부 확인"}
             children.append(j["id"])
         # 2) 캐러셀 컨테이너
         r = requests.post(f"{GRAPH}/{c['ig']}/media",
