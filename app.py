@@ -116,8 +116,12 @@ def image_search(q: str="", n: int=6):
 
 # ── 인스타 규격 리사이즈 (발행용 1080px JPG) ──────────
 def _make_publish_images(image_urls):
-    """2x PNG → 인스타 규격 1080px JPG로 변환, /outputs에 저장, 상대경로 반환."""
+    """2x PNG → 인스타 규격 1080px JPG로 변환, /outputs에 저장, 상대경로 반환.
+    발행마다 고유 파일명(pub_<token>_...)을 써서 Meta의 URL fetch 캐시를 우회한다.
+    (같은 파일명을 재사용하면 Meta가 과거 실패 결과를 캐싱해 계속 9004를 반환할 수 있음)"""
     from PIL import Image
+    import time
+    token = f"{int(time.time())}{secrets.token_hex(3)}"  # 발행마다 유니크
     out = []
     for u in image_urls:
         fname = os.path.basename(u)
@@ -131,7 +135,7 @@ def _make_publish_images(image_urls):
             target_w = 1080
             target_h = int(target_w * h / w)
             im = im.resize((target_w, target_h), Image.LANCZOS)
-            pub_name = "pub_" + os.path.splitext(fname)[0] + ".jpg"
+            pub_name = f"pub_{token}_" + os.path.splitext(fname)[0] + ".jpg"
             im.save(os.path.join(OUT, pub_name), "JPEG", quality=88)
             out.append("/outputs/" + pub_name)
         except Exception as e:
