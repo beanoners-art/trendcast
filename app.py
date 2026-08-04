@@ -68,10 +68,10 @@ def trends(geo: str="US", category: str="전체", n: int=6, wiki_lang: str="en")
     return {"items": engine.run(geo=geo, category=category, n=n, wiki_lang=wiki_lang)}
 
 # ── generate ──────────────────────────────────────────────
-def _generate_sync(t):
+def _generate_sync(t, lang="ko"):
     sens     = t.get("sensitive", False)
     material = enrich.gather(t, lang=t.get("wiki_lang","en"))
-    copy     = llm.localize(t, material=material, sensitive=sens)
+    copy     = llm.localize(t, material=material, sensitive=sens, lang=lang)
     n_slides = len(copy.get("slides", []))
     title    = t.get("title","")
     cat      = t.get("category","기타")
@@ -79,28 +79,40 @@ def _generate_sync(t):
     simgs    = images.fetch_slide_images(title, cat, n_slides)
     slug     = re.sub(r"[^a-z0-9]+"," ",title.lower())[:24].strip().replace(" ","-") or "trend"
     paths    = render_carousel.render(copy, OUT, sensitive=sens, slug=slug,
-                                      bg_url=(bg or {}).get("url"), slide_imgs=simgs)
+                                      bg_url=(bg or {}).get("url"), slide_imgs=simgs, lang=lang)
     urls     = ["/outputs/"+os.path.basename(p) for p in paths]
     src      = material.get("url","")
-    # LLM이 생성한 20줄 캡션(기사 본문 기반 + 해시태그) 사용, 없으면 폴백
+    # LLM이 생성한 캡션(기사 본문 기반 + 해시태그) 사용, 없으면 폴백
     cap = (copy.get("caption") or "").strip()
     if not cap:
-        cap = f"{copy['ko_title']}\n\n{copy.get('why_ko','')}".strip()
-    # 출처는 무조건 맨 아래 표시
-    source_line = f"📎 출처: {src}" if src else "📎 출처 확인"
+        cap = f"{copy.get('ko_title','')}\n\n{copy.get('why_ko','')}".strip()
+    # 출처는 무조건 맨 아래 표시 (언어별 라벨)
+    SRC_LABEL = {"ko": "📎 출처:", "ja": "📎 出典:", "en": "📎 Source:"}
+    SRC_NONE  = {"ko": "📎 출처 확인", "ja": "📎 出典を確認", "en": "📎 Source"}
+    label = SRC_LABEL.get(lang, SRC_LABEL["ko"])
+    source_line = f"{label} {src}" if src else SRC_NONE.get(lang, SRC_NONE["ko"])
     # 인스타 캡션 2,200자 제한 안전장치 (출처 줄은 항상 보존)
     LIMIT = 2200
     room = LIMIT - len(source_line) - 2
     if len(cap) > room:
         cap = cap[:max(0, room)].rstrip()
     caption = f"{cap}\n\n{source_line}"
-    return {"copy": copy, "images": urls, "caption": caption,
+    return {"copy": copy, "images": urls, "caption": caption, "lang": lang,
             "img_credit": bg, "bg_url": (bg or {}).get("url"),
             "slide_imgs": [ (s or {}).get("url") for s in simgs ]}
 
 @app.post("/api/generate")
 async def generate(req: Request):
     return await run_in_threadpool(_generate_sync, await req.json())
+
+@app.post("/api/generate-lang")
+async def generate_lang(req: Request):
+    """언어 전환: 같은 주제를 대상 언어(ko|ja|en)로 카드뉴스를 새로 생성."""
+    d = await req.json()
+    lang = d.get("lang", "ko")
+    if lang not in ("ko", "ja", "en"):
+        lang = "ko"
+    return await run_in_threadpool(_generate_sync, d, lang)
 
 # ── re-render (editor apply) ──────────────────────────────
 def _rerender_sync(t):

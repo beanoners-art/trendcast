@@ -332,14 +332,18 @@ def why(c):
     return " · ".join(bits)
 
 # ---------- 커피 전용 수집 ────────────────────────────
-# 커피 경제·산업·시장 + 스페셜티 위주 키워드
+# 커피 경제·산업·시장 + 스페셜티 위주 키워드 (국내)
 COFFEE_KEYWORDS = [
     "스페셜티 커피", "원두 가격", "커피 시장", "커피 산업",
     "스페셜티 로스터리", "생두 수입", "게이샤 커피", "커피 프랜차이즈",
 ]
+# 해외(영문) 커피 뉴스 검색 쿼리 — 원산지·시세·글로벌 트렌드·산업
+COFFEE_QUERY_EN = ('("specialty coffee" OR "coffee price" OR "coffee production" OR '
+                   '"coffee harvest" OR "arabica price" OR "coffee industry" OR '
+                   '"coffee origin")')
 
 def fetch_coffee_news(per_kw=3):
-    """커피 키워드로 네이버·카카오 뉴스를 검색해 트렌드 항목으로 변환.
+    """커피 키워드로 네이버·카카오 뉴스를 검색해 트렌드 항목으로 변환 (국내).
     키워드별로 라운드로빈 인터리브 → 특정 키워드 편중 방지, 제목 중복 제거."""
     per_lists = []
     for kw in COFFEE_KEYWORDS:
@@ -356,28 +360,73 @@ def fetch_coffee_news(per_kw=3):
                 if k and k not in seen:
                     seen.add(k)
                     items.append(it)
-    print(f"[coffee] 수집 {len(items)}건 (키워드 {len(COFFEE_KEYWORDS)}개)")
+    print(f"[coffee] 국내 수집 {len(items)}건")
     return items
 
+def fetch_coffee_news_foreign(limit=8):
+    """GDELT로 영문 커피 뉴스 수집 (원산지·시세·글로벌 트렌드·국제 이슈)."""
+    raw = fetch_gdelt(COFFEE_QUERY_EN)
+    seen, uniq = set(), []
+    for it in raw:
+        k = _key(it["title"])[:60]
+        if k and k not in seen:
+            seen.add(k)
+            uniq.append(it)
+    print(f"[coffee] 해외 수집 {len(uniq)}건")
+    return uniq[:limit]
+
 def _run_coffee(n=6):
-    """'커피' 카테고리 전용 파이프라인 — 뉴스 검색 결과를 트렌드 항목 형식으로 반환."""
-    raw = fetch_coffee_news()
+    """'커피' 카테고리 — 국내(네이버·카카오) + 해외(GDELT) 커피 뉴스를 섞어 반환.
+    해외 기사는 제목을 한국어로 번역해 노출."""
+    dom = fetch_coffee_news()             # 한국어 기사
+    frn = fetch_coffee_news_foreign()     # 영어 기사
+
+    # 국내는 이미 한국어
+    for c in dom:
+        c.setdefault("title_ko", c["title"])
+        c.setdefault("headline_ko", c.get("headline", ""))
+    # 해외는 제목/요약 한국어 번역
+    if frn:
+        try:
+            frn = _claude_translate_titles(frn)
+        except Exception as e:
+            print("[coffee] 해외 번역 실패:", e)
+            for c in frn:
+                c.setdefault("title_ko", c["title"])
+                c.setdefault("headline_ko", c.get("headline", ""))
+
+    # 국내·해외 번갈아 인터리브 (둘 다 노출), 제목 중복 제거
+    from itertools import zip_longest
+    mixed, seen = [], set()
+    for a, b in zip_longest(dom, frn):
+        for it in (a, b):
+            if it is None:
+                continue
+            k = _key(it["title"])[:60]
+            if k and k not in seen:
+                seen.add(k)
+                mixed.append(it)
+
     out = []
-    for i, c in enumerate(raw[:n], 1):
+    for rank, c in enumerate(mixed[:n], 1):
         blob = (c["title"] + " " + c.get("headline", "")).lower()
         sensitive = any(k in blob for k in SENSITIVE)
         src = c.get("source", "")
-        src_ko = {"naver_news": "네이버 뉴스", "kakao_news": "카카오 뉴스"}.get(src, src)
+        is_foreign = (src == "gdelt")
+        src_ko = {"naver_news": "네이버 뉴스", "kakao_news": "카카오 뉴스",
+                  "gdelt": "해외 뉴스"}.get(src, src)
         out.append(dict(
-            rank=i, title=c["title"], title_ko=c["title"],
-            headline=c.get("headline", ""), headline_ko=c.get("headline", ""),
+            rank=rank, title=c["title"],
+            title_ko=c.get("title_ko", c["title"]),
+            headline=c.get("headline", ""),
+            headline_ko=c.get("headline_ko", c.get("headline", "")),
             url=c.get("url", ""),
             category="커피", sensitive=sensitive,
-            trend_index=round(50 - i, 1), confidence=1.0,
-            final=round(50 - i, 1), velocity=None,
+            trend_index=round(50 - rank, 1), confidence=1.0,
+            final=round(50 - rank, 1), velocity=None,
             sources=[src] if src else ["naver_news"],
-            geo="KR",
-            why=f"{src_ko} · 커피 키워드 검색",
+            geo=c.get("geo", "KR"),
+            why=f"{src_ko} · 커피 키워드 검색" + (" · 해외" if is_foreign else ""),
         ))
     return out
 

@@ -93,15 +93,26 @@ def _material_text(m):
             L.append(f"- ({h['points']}pts {h['comments']}💬): {h['title'][:100]}")
     return "\n".join(L)
 
-def _anthropic(material, sensitive):
+def _anthropic(material, sensitive, lang="ko"):
     key = os.environ.get("ANTHROPIC_API_KEY", "")
     if not key: return None
     try:
         from anthropic import Anthropic
         client = Anthropic(api_key=key)
+        lang_name = {"ko": "한국어(Korean)", "ja": "일본어(Japanese)",
+                     "en": "영어(English)"}.get(lang, "한국어(Korean)")
+        lang_directive = ""
+        if lang != "ko":
+            lang_directive = (
+                f"\n\n[OUTPUT LANGUAGE — 최우선] 모든 카드 텍스트를 반드시 {lang_name}로만 작성하라. "
+                f"대상: 각 슬라이드의 title/body, caption(해시태그 포함), key_numbers의 label과 delta. "
+                f"JSON 키 이름(ko_title, why_ko, caption, key_numbers, slides 등)은 그대로 두고 '값'만 "
+                f"{lang_name}로 쓴다. ko_title 값에도 {lang_name} 제목을 넣는다. "
+                f"한국어를 섞지 말고 완전히 {lang_name}로 작성하라. 인물·기관 고유명사는 {lang_name} 표기 관례를 따른다.")
         user = (f"[재료]\n{_material_text(material)[:9000]}\n\n"
                 f"[민감 주제] {sensitive}\n"
-                f"위 재료로 에디토리얼 카드뉴스와 인스타 캡션을 만들어라. 구체적 사실을 최대한 살려라.")
+                f"위 재료로 에디토리얼 카드뉴스와 인스타 캡션을 만들어라. 구체적 사실을 최대한 살려라."
+                f"{lang_directive}")
         msg = client.messages.create(model=MODEL(), max_tokens=6000,
                                      system=SYS, messages=[{"role": "user", "content": user}])
         txt = "".join(b.text for b in msg.content if b.type == "text")
@@ -173,7 +184,7 @@ def _fallback(material, sensitive):
     return {"ko_title": t, "why_ko": material.get("headline", ""),
             "caption": cap, "key_numbers": [], "slides": slides[:10], "_fallback": True}
 
-def localize(topic, material=None, sensitive=False):
+def localize(topic, material=None, sensitive=False, lang="ko"):
     material = material or {"title": topic.get("title", ""),
                             "headline": topic.get("headline", "")}
-    return _anthropic(material, sensitive) or _fallback(material, sensitive)
+    return _anthropic(material, sensitive, lang) or _fallback(material, sensitive)

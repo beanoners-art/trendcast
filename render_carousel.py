@@ -145,10 +145,11 @@ def _slide_html(i, n, slide, bg_b64, content_b64, watermark, sensitive, fact_bad
     </div></body></html>"""
 
 def render(copy, out_dir, sensitive=False, slug="trend",
-           bg_url=None, slide_imgs=None, layout=None, img_url=None):
+           bg_url=None, slide_imgs=None, layout=None, img_url=None, lang="ko"):
     """
     copy["slides"]: [{"title","body","img"}] 또는 구버전 문자열 리스트도 수용.
     copy["key_numbers"]: [{"value","label","delta"}] → 표지 다음 숫자 비교 카드 자동 삽입.
+    lang: ko|ja|en — FACT 배지·숫자카드 제목 언어.
     """
     os.makedirs(out_dir, exist_ok=True)
     slides = list(copy["slides"])
@@ -156,15 +157,23 @@ def render(copy, out_dir, sensitive=False, slug="trend",
         slides = [dict(title=s.split("\n")[0],
                        body="\n".join(s.split("\n")[1:]), img=False) for s in slides]
 
+    # 언어별 라벨
+    NUM_TITLE = {"ko": "숫자로 보는 핵심", "ja": "数字で見る要点", "en": "BY THE NUMBERS"}
+    FACT_DEF  = {"ko": "FACT · 출처 명시", "ja": "FACT · 出典明記", "en": "FACT · SOURCE VERIFIED"}
+    num_title = NUM_TITLE.get(lang, NUM_TITLE["ko"])
+
     # 숫자 비교 카드: key_numbers가 2개 이상이면 표지(0) 다음에 삽입
     key_nums = copy.get("key_numbers") or []
     if isinstance(key_nums, list) and len(key_nums) >= 2:
-        num_slide = {"_numbers": key_nums[:4], "title": "숫자로 보는 핵심", "img": False}
+        num_slide = {"_numbers": key_nums[:4], "title": num_title, "img": False}
         slides.insert(1 if len(slides) >= 1 else 0, num_slide)
 
     n = len(slides)
     watermark  = os.environ.get("BRAND_HANDLE", "트렌드 브리핑")
-    fact_badge = os.environ.get("FACT_BADGE", "FACT · 출처 명시")
+    # FACT 배지: 한국어는 환경변수 우선, 그 외 언어는 언어별 기본값
+    fact_badge = FACT_DEF.get(lang, FACT_DEF["ko"])
+    if lang == "ko":
+        fact_badge = os.environ.get("FACT_BADGE", fact_badge)
 
     bg_b64 = _b64(bg_url or img_url)
     imgs_b64 = []

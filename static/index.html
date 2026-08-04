@@ -182,6 +182,7 @@ function editorEl(d,it){
   let layout=d.layout||"dark";
   let selImg=null;
   let curSlide=0;
+  let curLang=d.lang||"ko";
 
   function render(){
     wrap.innerHTML=`
@@ -203,6 +204,12 @@ function editorEl(d,it){
             </select>
             <button class="btn sm" id="apply-${it.rank}">적용 (PNG 재생성)</button>
           </div>
+        </div>
+        <!-- language switch -->
+        <div class="lang-row" style="display:flex;gap:5px;margin:2px 0 8px;flex-wrap:wrap">
+          <button class="lyt-btn lang-btn ${curLang==='ko'?'on':''}" data-lang="ko">🇰🇷 한국어</button>
+          <button class="lyt-btn lang-btn ${curLang==='ja'?'on':''}" data-lang="ja">🇯🇵 日本語</button>
+          <button class="lyt-btn lang-btn ${curLang==='en'?'on':''}" data-lang="en">🇺🇸 English</button>
         </div>
         <!-- slide tabs -->
         <div class="slide-tabs">
@@ -336,9 +343,27 @@ function editorEl(d,it){
     wrap.querySelector(".pubi").onclick=()=>doPublish(d,"instagram",wrap,it);
     wrap.querySelector(".pubt").onclick=()=>doPublish(d,"threads",wrap,it);
     wrap.querySelector(".dl").onclick=()=>doDownload(d,wrap,it);
+    // language switch
+    wrap.querySelectorAll(".lang-btn").forEach(b=>{
+      b.onclick=()=>switchLang(d,it,b.dataset.lang,wrap);
+    });
   }
 
   render(); return wrap;
+}
+
+/* ── language switch (그 언어로 카드 재생성) ── */
+function langLabel(l){return {ko:"한국어",ja:"日本語",en:"English"}[l]||l;}
+async function switchLang(d,it,lang,wrap){
+  if(lang===(d.lang||"ko")) return;              // 같은 언어면 무시
+  const box=wrap.parentNode; if(!box) return;
+  box.innerHTML='<div class="loading">'+langLabel(lang)+' 버전 생성 중… (10~20초)</div>';
+  try{
+    const nd=await fetch("/api/generate-lang",{method:"POST",
+      headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({...it,lang})}).then(r=>r.json());
+    box.innerHTML=""; box.appendChild(editorEl(nd,it));
+  }catch(e){ box.innerHTML='<div class="note">오류: '+e+'</div>'; }
 }
 
 /* ── download all cards (인스타 규격 1080 JPG · ZIP) ── */
