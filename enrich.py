@@ -4,11 +4,40 @@
 소스: Guardian(전문) > NYT(선택) > NewsAPI(발췌) / 위키 리드 / Reddit·HN(반응)
 모든 소스는 실패해도 전체 파이프라인이 죽지 않게 graceful.
 """
-import os, re, requests, urllib.parse
+import os, re, html, requests, urllib.parse
 
 UA = {"User-Agent": "Mozilla/5.0 (trendcast/0.3)"}
 
 def _env(k): return os.environ.get(k, "")
+
+def _clean_text(t):
+    """HTML 태그·엔티티 제거 (검색 결과 정리용)."""
+    t = html.unescape(t or "")
+    t = re.sub(r"<[^>]+>", "", t)
+    return re.sub(r"[ \t]+", " ", t).strip()
+
+# 뉴스 검색을 오염시키는 커뮤니티/집계 노이즈 단어
+_QUERY_NOISE = {
+    "오늘자","오늘","뉴스","가져옴","가져왔다","가져와","실시간","속보","단독","공식",
+    "근황","현재","방금","떴다","레전드","클라스","대박","실화","이거","이건","봐라",
+    "보는","보기","모음","정리","요약","한눈에","네이트","네이버","다음","연예",
+}
+
+def _clean_query(q):
+    """트렌드 제목에서 ㅋㅋ·이모지·노이즈를 걸러 뉴스 검색용 핵심 키워드만 남긴다.
+    예: 'ㅋㅋㅋ 리센느 제나 오늘자 뉴스 가져옴ㅋㅋ' → '리센느 제나'"""
+    t = re.sub(r"[ㄱ-ㅎㅏ-ㅣ]{1,}", " ", q or "")   # 자음/모음 반복(ㅋㅋ,ㅠㅠ 등)
+    t = re.sub(r"[^\w\s]", " ", t)                    # 이모지·특수문자 제거(한글은 \w에 포함)
+    toks, seen = [], set()
+    for w in t.split():
+        if len(w) < 2 or w in _QUERY_NOISE or w in seen:
+            continue
+        seen.add(w); toks.append(w)
+    cleaned = " ".join(toks[:5]).strip()
+    if cleaned:
+        return cleaned
+    # 전부 걸러졌으면 ㅋㅋ만 뺀 원문으로 폴백
+    return re.sub(r"[ㄱ-ㅎㅏ-ㅣ]+", " ", q or "").strip() or (q or "")
 
 # ── 위키피디아: 배경·인물·숫자 ─────────────────────────
 def wiki_material(title, lang="en"):
@@ -158,7 +187,7 @@ def hn_reactions(query, n=4):
         print("[hn] err", e)
     return hits
 
-# ── 통합 ───────────────────────────────────────────────
+# ── 국내 뉴스 ──────────────────────────────────────────
 def naver_news_articles(query, n=5):
     """네이버 뉴스 검색 — 국내 기사 제목·요약 (enrich 재료용)."""
     cid = _env("NAVER_CLIENT_ID")
@@ -171,16 +200,11 @@ def naver_news_articles(query, n=5):
             headers={"X-Naver-Client-Id": cid, "X-Naver-Client-Secret": sec,
                      "User-Agent": "trendcast/0.3"}, timeout=10)
         if r.status_code == 200:
-            import re as _re2, html as _html
-            def _clean(t):
-                t = _html.unescape(t or "")
-                t = _re2.sub(r"<[^>]+>", "", t)
-                return t.strip()
             for item in r.json().get("items", [])[:n]:
-                title = _clean(item.get("title",""))
-                desc  = _clean(item.get("description",""))
+                title = _clean_text(item.get("title",""))
+                desc  = _clean_text(item.get("description",""))
                 if title:
-                    arts.append(dict(title=title, domain="네이버뉴스",
+                    arts.append(dict(title=title, domain="네이버뉴스", section="",
                                      date="", url=item.get("originallink",""),
                                      body=desc[:300]))
         elif r.status_code == 401:
@@ -193,7 +217,7 @@ def naver_news_articles(query, n=5):
 
 
 def kakao_news_articles(query, n=4):
-    """카카오 뉴스 검색 — 국내 기사 제목·요약."""
+    """카카오 웹 검색 — 국내 기사 제목·요약."""
     key = _env("KAKAO_REST_API_KEY")
     if not key: return []
     arts = []
@@ -204,11 +228,12 @@ def kakao_news_articles(query, n=4):
                      "User-Agent": "trendcast/0.3"}, timeout=10)
         if r.status_code == 200:
             for d in r.json().get("documents",[])[:n]:
-                title = d.get("title","").replace("<b>","").replace("</b>","").strip()
+                title = _clean_text(d.get("title",""))
+                body  = _clean_text(d.get("contents",""))   # <b> 등 제거
                 if title:
-                    arts.append(dict(title=title, domain="카카오",
+                    arts.append(dict(title=title, domain="카카오", section="",
                                      date="", url=d.get("url",""),
-                                     body=(d.get("contents","") or "")[:300]))
+                                     body=body[:300]))
         else:
             print("[kakao_enrich] status", r.status_code)
     except Exception as e:
@@ -216,34 +241,41 @@ def kakao_news_articles(query, n=4):
     return arts
 
 
+# ── 통합 ───────────────────────────────────────────────
 def gather(topic, lang="en"):
     title = topic.get("title", "")
-    wiki      = wiki_material(title, lang)
-    guardian  = guardian_articles(title)
-    newsapi   = newsapi_articles(title, 2) if guardian else newsapi_articles(title)
-    # 국내 이슈(geo=KR)이면 네이버·카카오 기사도 재료로
     is_kr = (topic.get("geo","") == "KR" or
              any(s in topic.get("sources",[]) for s in ("naver_datalab","naver_news","kakao_news")))
-    naver  = naver_news_articles(title) if is_kr else []
-    kakao  = kakao_news_articles(title) if is_kr and not naver else []
-    reddit = reddit_reactions(title)
-    hn     = hn_reactions(title)
-    total_body = sum(len(a.get("body","")) for a in guardian+naver)
+    # 국내 트렌드는 커뮤니티식 제목이 많아 검색어를 정제해서 사용
+    q_kr = _clean_query(title) if is_kr else title
+    if is_kr and q_kr != title:
+        print(f"[gather] 검색어 정제: '{title}' → '{q_kr}'")
+
+    wiki      = wiki_material(title, lang)
+    # 국내 트렌드는 Guardian(영문)이 무의미하므로 스킵 (414/빈결과 방지)
+    guardian  = [] if is_kr else guardian_articles(title)
+    newsapi   = newsapi_articles(title, 2) if guardian else (newsapi_articles(title) if not is_kr else [])
+    naver  = naver_news_articles(q_kr) if is_kr else []
+    kakao  = kakao_news_articles(q_kr) if is_kr and len(naver) < 2 else []
+    reddit = [] if is_kr else reddit_reactions(title)
+    hn     = [] if is_kr else hn_reactions(title)
+
+    all_articles = guardian + naver + kakao
+    total_body = sum(len(a.get("body","")) for a in all_articles)
     print(f"[gather] guardian={len(guardian)} naver={len(naver)} kakao={len(kakao)} "
           f"newsapi={len(newsapi)} reddit={len(reddit)} hn={len(hn)} "
           f"wiki={len(wiki['lead'])}ch body={total_body}ch")
-    # 국내 뉴스를 guardian 자리에 같이 넣음 (llm.py는 guardian 키를 재료로 사용)
-    all_articles = guardian + naver + kakao
     return {
         "title": title,
         "description": wiki["description"],
         "lead": wiki["lead"],
         "headline": topic.get("headline", ""),
-        "guardian": all_articles,
+        "guardian": all_articles,   # llm.py는 'guardian' 키를 기사 재료로 사용
         "news": newsapi,
         "reddit": reddit,
         "hn": hn,
-        "url": wiki["url"] or topic.get("url", ""),
+        "url": (all_articles[0]["url"] if all_articles and all_articles[0].get("url")
+                else (wiki["url"] or topic.get("url", ""))),
         "has_body": bool(wiki["lead"] or all_articles or newsapi),
     }
 
