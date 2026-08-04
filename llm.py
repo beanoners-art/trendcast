@@ -3,6 +3,7 @@
 카피 생성 v3 — 에디토리얼 문단형.
 슬라이드 구조: {"title": "...", "body": "문단 (**볼드** 마커 포함)", "img": true/false}
 재료: Guardian 전문 + 위키 + NewsAPI + Reddit/HN 반응.
++ 인스타 캡션(caption): 기사 본문 기반 20줄 내외 상세 설명 + 해시태그.
 """
 import os, json, re
 
@@ -27,13 +28,25 @@ SYS = """너는 한국 매거진 에디터다. 주어진 재료(기사 전문·�
 8. 전망 or 알아둘 점
 9. 마무리: 요약 + 출처 확인 유도. 마지막 문장은 독자 참여 질문 (예: "여러분 생각은 어떤가요?")
 
+[인스타 캡션 — caption 필드]
+카드뉴스와 별개로, 게시물 설명글(캡션)을 작성한다. 규칙:
+- 기사 본문(재료)의 내용을 바탕으로 한 상세 설명. 카드 요약이 아니라 '본문을 안 봐도
+  이해되는 완결된 글'로 쓴다.
+- 분량: 18~22줄(줄바꿈 포함) 내외. 문단은 2~4개로 나누고 문단 사이 빈 줄을 넣는다.
+- 첫 줄은 후킹 헤드라인 한 줄. 이후 문단에서 핵심 사실·배경·맥락·의미를 서술.
+- 재료에 있는 구체 사실(인물·직책·날짜·금액·수치·기관)을 최대한 반영. 없는 건 지어내지 않는다.
+- 마지막 문단 뒤에 해시태그를 5~8개 넣는다. 형식은 공백 구분 한 줄(예: #키워드1 #키워드2).
+  해시태그는 주제·인물·분야에서 자연스럽게 뽑고, 과하거나 무관한 건 넣지 않는다.
+- 캡션 안에는 HTML 태그를 쓰지 않는다. **볼드** 마커도 캡션에는 넣지 않는다(순수 텍스트).
+- 출처 URL은 캡션에 직접 쓰지 않는다(코드가 맨 아래 자동으로 붙인다).
+
 규칙:
 - 직역·번역투 금지. 과장·클릭베이트 금지.
 - 개인 평가·선동 금지. 사실 전달만. 민감 주제(사고·사망·재난·정치)는 특히 중립.
-- 볼드는 **단어** 형식만 사용.
+- 볼드는 **단어** 형식만 사용(슬라이드 body에만).
 
 JSON만 출력:
-{"ko_title":"...","why_ko":"...","slides":[{"title":"...","body":"...","img":true}, ...]}"""
+{"ko_title":"...","why_ko":"...","caption":"18~22줄 캡션 + 해시태그","slides":[{"title":"...","body":"...","img":true}, ...]}"""
 
 def _material_text(m):
     L = [f"제목: {m.get('title','')}"]
@@ -64,8 +77,8 @@ def _anthropic(material, sensitive):
         client = Anthropic(api_key=key)
         user = (f"[재료]\n{_material_text(material)[:9000]}\n\n"
                 f"[민감 주제] {sensitive}\n"
-                f"위 재료로 에디토리얼 카드뉴스를 만들어라. 구체적 사실을 최대한 살려라.")
-        msg = client.messages.create(model=MODEL(), max_tokens=5000,
+                f"위 재료로 에디토리얼 카드뉴스와 인스타 캡션을 만들어라. 구체적 사실을 최대한 살려라.")
+        msg = client.messages.create(model=MODEL(), max_tokens=6000,
                                      system=SYS, messages=[{"role": "user", "content": user}])
         txt = "".join(b.text for b in msg.content if b.type == "text")
         data = _safe_json(txt)
@@ -101,8 +114,12 @@ def _safe_json(txt):
         slides = [json.loads(o) for o in objs]
         if slides:
             title = (re.search(r'"ko_title"\s*:\s*"([^"]+)"', t) or [None, ""])
+            cap   = (re.search(r'"caption"\s*:\s*"((?:[^"\\]|\\.)*)"', t) or [None, ""])
             return {"ko_title": title[1] if isinstance(title, list) else "",
-                    "why_ko": "", "slides": slides}
+                    "why_ko": "",
+                    "caption": (cap[1].encode().decode("unicode_escape")
+                                if isinstance(cap, list) and cap[1] else ""),
+                    "slides": slides}
     except Exception:
         pass
     return None
@@ -124,8 +141,13 @@ def _fallback(material, sensitive):
     note = "사실 관계만 정리했습니다. 출처를 직접 확인하세요." if sensitive \
         else "핵심만 정리했습니다. 자세한 내용은 출처에서 확인하세요."
     slides.append(dict(title="마무리", body=note + " 여러분 생각은 어떤가요?", img=False))
+    # 폴백 캡션: 앞 문장들을 이어붙여 상세 설명 구성 + 기본 해시태그
+    body_para = " ".join(sents[:8]).strip()
+    cap = (f"{t}\n\n{body_para}\n\n"
+           "자세한 내용은 아래 출처에서 확인하세요.\n\n"
+           "#트렌드 #이슈 #뉴스 #오늘의뉴스 #트렌드브리핑") if body_para else ""
     return {"ko_title": t, "why_ko": material.get("headline", ""),
-            "slides": slides[:10], "_fallback": True}
+            "caption": cap, "slides": slides[:10], "_fallback": True}
 
 def localize(topic, material=None, sensitive=False):
     material = material or {"title": topic.get("title", ""),

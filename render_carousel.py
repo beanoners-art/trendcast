@@ -6,7 +6,7 @@
 - 슬라이드별 삽입 사진 카드 (본문 위/아래)
 - 하단 워터마크 (BRAND_HANDLE 환경변수, 기본 '트렌드 브리핑')
 """
-import os, re, base64, requests
+import os, re, base64, html, requests
 from playwright.sync_api import sync_playwright
 
 IVORY, AMBER, DARK = "#F5EFE2", "#E8A63C", "#171009"
@@ -22,14 +22,25 @@ def _b64(url, timeout=12):
         print("[render] img dl err", e)
         return None
 
+def _strip_html(text):
+    """소스에서 딸려온 실제 HTML 태그·엔티티를 제거한다.
+    네이트/네이버/카카오 등이 검색어를 <b>...</b>로 강조해 보내는 것을 정리.
+    앱 자체의 **볼드** 마커는 건드리지 않는다(여기서는 태그만 제거)."""
+    t = html.unescape(text or "")            # &amp; &quot; &lt;b&gt; 등 먼저 복원
+    t = re.sub(r"</?[a-zA-Z][^>]*>", "", t)  # <b>,</b>,<br>,<div ...> 등 실제 태그 제거
+    t = re.sub(r"[ \t]+", " ", t)            # 태그 제거로 생긴 중복 공백 정리
+    return t.strip()
+
 def _fmt_body(body):
-    """**볼드** → 하이라이트 span, 줄바꿈 유지."""
-    safe = (body or "").replace("<", "&lt;").replace(">", "&gt;")
-    safe = re.sub(r"\*\*(.+?)\*\*", r'<b class="hl">\1</b>', safe)
+    """**볼드** → 하이라이트 span, 줄바꿈 유지. (소스 HTML 태그는 먼저 제거)"""
+    safe = _strip_html(body)                          # <b> 등 실제 태그 제거
+    safe = safe.replace("<", "&lt;").replace(">", "&gt;")  # 남은 <,> 안전 이스케이프
+    safe = re.sub(r"\*\*(.+?)\*\*", r'<b class="hl">\1</b>', safe)  # 앱 볼드 마커
     return safe.replace("\n", "<br>")
 
 def _slide_html(i, n, slide, bg_b64, content_b64, watermark, sensitive):
-    title = (slide.get("title") or "").replace("<", "&lt;").replace("\n", "<br>")
+    title = _strip_html(slide.get("title") or "") \
+                .replace("<", "&lt;").replace(">", "&gt;").replace("\n", "<br>")
     body  = _fmt_body(slide.get("body", ""))
     is_cover = (i == 0)
     fscale = float(slide.get("fontScale", 1.0))

@@ -82,8 +82,18 @@ def _generate_sync(t):
                                       bg_url=(bg or {}).get("url"), slide_imgs=simgs)
     urls     = ["/outputs/"+os.path.basename(p) for p in paths]
     src      = material.get("url","")
-    caption  = (f"{copy['ko_title']}\n\n{copy.get('why_ko','')}\n\n"
-                f"(사실 전달 · 출처 확인{' · '+src if src else ''})")
+    # LLM이 생성한 20줄 캡션(기사 본문 기반 + 해시태그) 사용, 없으면 폴백
+    cap = (copy.get("caption") or "").strip()
+    if not cap:
+        cap = f"{copy['ko_title']}\n\n{copy.get('why_ko','')}".strip()
+    # 출처는 무조건 맨 아래 표시
+    source_line = f"📎 출처: {src}" if src else "📎 출처 확인"
+    # 인스타 캡션 2,200자 제한 안전장치 (출처 줄은 항상 보존)
+    LIMIT = 2200
+    room = LIMIT - len(source_line) - 2
+    if len(cap) > room:
+        cap = cap[:max(0, room)].rstrip()
+    caption = f"{cap}\n\n{source_line}"
     return {"copy": copy, "images": urls, "caption": caption,
             "img_credit": bg, "bg_url": (bg or {}).get("url"),
             "slide_imgs": [ (s or {}).get("url") for s in simgs ]}
@@ -224,6 +234,60 @@ async def do_publish(req: Request):
                              "error": f"이미지 호스팅 실패: {made['error']}"})
     res  = (publish.publish_threads(pub_imgs, d.get("caption","")) if plat=="threads"
             else publish.publish_instagram(pub_imgs, d.get("caption","")))
+    return JSONResponse(res)
+
+# ── 자동 발행 (매일 09:00 KST, 완전 자동) ───────────────
+def auto_publish_job():
+    """한국 전체 트렌드에서 1건을 골라 생성→발행까지 자동으로 수행한다.
+    무인 발행이므로 민감(sensitive) 이슈는 건너뛰고 첫 비민감 항목을 사용."""
+    print("[auto] 자동 발행 시작", flush=True)
+    try:
+        items = engine.run(geo="KR", category="전체", n=6, wiki_lang="ko")
+        if not items:
+            print("[auto] 트렌드 없음, 중단")
+            return {"status": "error", "error": "트렌드 없음"}
+        # 민감 이슈는 무인 발행에서 제외
+        item = next((it for it in items if not it.get("sensitive")), items[0])
+        item.setdefault("wiki_lang", "ko")
+        item.setdefault("category", "전체")
+        print(f"[auto] 선택 트렌드: {item.get('title')}")
+        gen  = _generate_sync(item)
+        made = _make_publish_images(gen["images"])
+        if made.get("error"):
+            print("[auto] 이미지 호스팅 실패:", made["error"])
+            return {"status": "error", "error": made["error"]}
+        res = publish.publish_instagram(made["urls"], gen["caption"])
+        print("[auto] 발행 결과:", res.get("status"), res.get("error", ""))
+        return res
+    except Exception as e:
+        import traceback; traceback.print_exc()
+        print("[auto] 예외:", e)
+        return {"status": "error", "error": str(e)}
+
+@app.on_event("startup")
+def _start_scheduler():
+    # AUTO_PUBLISH=0 으로 끄면 스케줄러 비활성 (기본 켜짐)
+    if os.environ.get("AUTO_PUBLISH", "1") != "1":
+        print("[auto] AUTO_PUBLISH!=1 → 스케줄러 비활성")
+        return
+    try:
+        from apscheduler.schedulers.background import BackgroundScheduler
+        from apscheduler.triggers.cron import CronTrigger
+        sched = BackgroundScheduler(timezone="UTC")
+        # 00:00 UTC == 09:00 KST (KST=UTC+9, 서머타임 없음)
+        sched.add_job(auto_publish_job, CronTrigger(hour=0, minute=0),
+                      id="daily_ig", misfire_grace_time=3600, coalesce=True,
+                      max_instances=1)
+        sched.start()
+        app.state.scheduler = sched
+        print("[auto] 스케줄러 시작 — 매일 09:00 KST(=00:00 UTC) 자동 발행")
+    except Exception as e:
+        print("[auto] 스케줄러 시작 실패:", e)
+
+@app.post("/api/auto-publish-now")
+async def auto_publish_now():
+    """자동 발행 흐름을 지금 즉시 1회 실행 (테스트용). 9시까지 안 기다려도 됨."""
+    res = await run_in_threadpool(auto_publish_job)
     return JSONResponse(res)
 
 if __name__ == "__main__":
