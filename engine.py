@@ -3,6 +3,9 @@
 트렌드 수집·점수화 엔진 (키리스 소스 중심)
 흐름: 수집 → 소스내 정규화 → 이슈 클러스터링 → 트렌드지수(속도, 1차 게이트)
       → 관련성 × 소스교차 확신도 (2차 점수) → 카테고리/브랜드세이프티 태깅 → 랭킹
+
++ '커피' 카테고리: 실시간 트렌드에는 커피가 거의 안 잡히므로, 이 카테고리는
+  파이프라인을 건너뛰고 커피 키워드로 네이버·카카오 뉴스를 직접 검색해 모은다.
 """
 import requests, xml.etree.ElementTree as ET, datetime as dt, json, os, re, math
 from difflib import SequenceMatcher
@@ -150,6 +153,7 @@ CATS = {
     "문화·연예": ["film", "movie", "music", "album", "actor", "singer", "series", "drama", "celebrit", "영화", "음악", "배우", "가수", "드라마", "아이돌"],
     "스포츠": ["match", "league", "cup", "goal", "player", "coach", "chelsea", "nba", "fifa", "축구", "야구", "농구", "리그", "감독", "선수"],
     "기술·IT": ["ai", "tech", "software", "chip", "startup", "robot", "인공지능", "반도체", "스타트업"],
+    "커피": ["coffee", "espresso", "roast", "barista", "커피", "원두", "생두", "카페", "로스터", "로스팅", "스페셜티", "게이샤", "바리스타", "에스프레소"],
 }
 SENSITIVE = ["death", "died", "dead", "killed", "kill", "shot", "shooting", "accident", "crash",
              "disaster", "earthquake", "flood", "war", "attack", "victim", "사망", "숨져", "사고",
@@ -327,6 +331,56 @@ def why(c):
         bits.append("복수 소스 동시 신호")
     return " · ".join(bits)
 
+# ---------- 커피 전용 수집 ────────────────────────────
+# 커피 경제·산업·시장 + 스페셜티 위주 키워드
+COFFEE_KEYWORDS = [
+    "스페셜티 커피", "원두 가격", "커피 시장", "커피 산업",
+    "스페셜티 로스터리", "생두 수입", "게이샤 커피", "커피 프랜차이즈",
+]
+
+def fetch_coffee_news(per_kw=3):
+    """커피 키워드로 네이버·카카오 뉴스를 검색해 트렌드 항목으로 변환.
+    키워드별로 라운드로빈 인터리브 → 특정 키워드 편중 방지, 제목 중복 제거."""
+    per_lists = []
+    for kw in COFFEE_KEYWORDS:
+        got = fetch_naver_news(kw, n=per_kw)
+        if not got:
+            got = fetch_kakao_news(kw, n=per_kw)
+        per_lists.append(got)
+    items, seen = [], set()
+    for row in range(per_kw):
+        for lst in per_lists:
+            if row < len(lst):
+                it = lst[row]
+                k = _key(it["title"])[:60]
+                if k and k not in seen:
+                    seen.add(k)
+                    items.append(it)
+    print(f"[coffee] 수집 {len(items)}건 (키워드 {len(COFFEE_KEYWORDS)}개)")
+    return items
+
+def _run_coffee(n=6):
+    """'커피' 카테고리 전용 파이프라인 — 뉴스 검색 결과를 트렌드 항목 형식으로 반환."""
+    raw = fetch_coffee_news()
+    out = []
+    for i, c in enumerate(raw[:n], 1):
+        blob = (c["title"] + " " + c.get("headline", "")).lower()
+        sensitive = any(k in blob for k in SENSITIVE)
+        src = c.get("source", "")
+        src_ko = {"naver_news": "네이버 뉴스", "kakao_news": "카카오 뉴스"}.get(src, src)
+        out.append(dict(
+            rank=i, title=c["title"], title_ko=c["title"],
+            headline=c.get("headline", ""), headline_ko=c.get("headline", ""),
+            url=c.get("url", ""),
+            category="커피", sensitive=sensitive,
+            trend_index=round(50 - i, 1), confidence=1.0,
+            final=round(50 - i, 1), velocity=None,
+            sources=[src] if src else ["naver_news"],
+            geo="KR",
+            why=f"{src_ko} · 커피 키워드 검색",
+        ))
+    return out
+
 # ---------- 파이프라인 진입점 ----------
 # 지역 프리셋: 한국 관심사 중심으로 다국가 혼합
 REGION_PRESETS = {
@@ -339,6 +393,10 @@ REGION_PRESETS = {
 KR_NAVER_ENABLED = True   # 네이버/카카오 국내 소스 사용 여부
 
 def run(geo="GLOBAL_KR", category="전체", n=6, wiki_lang="en"):
+    # '커피' 카테고리는 실시간 트렌드에 안 잡히므로 전용 뉴스 검색으로 분기
+    if category == "커피":
+        return _run_coffee(n)
+
     regions = REGION_PRESETS.get(geo, [(geo, wiki_lang)])
     raw = []
     seen_geo = set()
