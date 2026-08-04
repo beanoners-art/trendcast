@@ -221,6 +221,45 @@ def _make_publish_images(image_urls):
             out.append(u)
     return {"urls": out, "error": None}
 
+# ── 카드 전체 다운로드 (인스타 규격 1080 JPG · ZIP) ────
+def _build_zip(image_urls):
+    """편집 화면의 카드(2x PNG)를 인스타 규격 1080px JPG로 리사이즈해 ZIP 바이트로 묶는다."""
+    import io, zipfile
+    from PIL import Image
+    buf = io.BytesIO()
+    count = 0
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        for i, u in enumerate(image_urls, 1):
+            src = os.path.join(OUT, os.path.basename(u))
+            if not os.path.exists(src):
+                continue
+            try:
+                im = Image.open(src).convert("RGB")
+                w, h = im.size
+                tw = 1080
+                th = int(tw * h / w)
+                im = im.resize((tw, th), Image.LANCZOS)
+                ib = io.BytesIO()
+                im.save(ib, "JPEG", quality=90)
+                zf.writestr(f"card_{i:02d}.jpg", ib.getvalue())
+                count += 1
+            except Exception as e:
+                print("[zip] err", e)
+    buf.seek(0)
+    return buf.getvalue(), count
+
+@app.post("/api/download-zip")
+async def download_zip(req: Request):
+    from fastapi.responses import Response
+    d = await req.json()
+    data, count = await run_in_threadpool(_build_zip, d.get("images", []))
+    if count == 0:
+        return JSONResponse({"error": "다운로드할 카드가 없습니다. 먼저 카드를 생성하세요."},
+                            status_code=400)
+    return Response(content=data, media_type="application/zip",
+                    headers={"Content-Disposition":
+                             'attachment; filename="trendcast_cards.zip"'})
+
 # ── publish ───────────────────────────────────────────────
 @app.post("/api/publish")
 async def do_publish(req: Request):

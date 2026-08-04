@@ -241,6 +241,7 @@ function editorEl(d,it){
       <div class="act" style="margin-top:8px">
         <button class="btn ghost sm pubi">인스타 예약</button>
         <button class="btn ghost sm pubt">스레드 예약</button>
+        <button class="btn sm dl">⬇ 카드 전체 다운로드</button>
       </div>
       <div class="pub" id="pub-${it.rank}"></div>`;
 
@@ -334,9 +335,33 @@ function editorEl(d,it){
     // publish
     wrap.querySelector(".pubi").onclick=()=>doPublish(d,"instagram",wrap,it);
     wrap.querySelector(".pubt").onclick=()=>doPublish(d,"threads",wrap,it);
+    wrap.querySelector(".dl").onclick=()=>doDownload(d,wrap,it);
   }
 
   render(); return wrap;
+}
+
+/* ── download all cards (인스타 규격 1080 JPG · ZIP) ── */
+async function doDownload(d,wrap,it){
+  const btn=wrap.querySelector(".dl");
+  const old=btn.textContent; btn.disabled=true; btn.textContent="압축 중…";
+  try{
+    const r=await fetch("/api/download-zip",{method:"POST",
+      headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({images:d.images})});
+    if(!r.ok){const e=await r.json().catch(()=>({}));throw new Error(e.error||"실패");}
+    const blob=await r.blob();
+    const url=URL.createObjectURL(blob);
+    const a=document.createElement("a");
+    a.href=url; a.download="trendcast_cards.zip";
+    document.body.appendChild(a); a.click(); a.remove();
+    URL.revokeObjectURL(url);
+    btn.textContent="✓ 다운로드됨";
+    setTimeout(()=>{btn.textContent=old;btn.disabled=false;},2000);
+  }catch(err){
+    btn.textContent="다운로드 실패";
+    setTimeout(()=>{btn.textContent=old;btn.disabled=false;},2000);
+  }
 }
 
 /* ── publish ── */
