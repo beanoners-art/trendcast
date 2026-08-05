@@ -97,7 +97,7 @@ def _generate_sync(t, lang="ko"):
     if len(cap) > room:
         cap = cap[:max(0, room)].rstrip()
     caption = f"{cap}\n\n{source_line}"
-    return {"copy": copy, "images": urls, "caption": caption, "lang": lang,
+    return {"copy": copy, "images": urls, "caption": caption, "lang": lang, "src": src,
             "img_credit": bg, "bg_url": (bg or {}).get("url"),
             "slide_imgs": [ (s or {}).get("url") for s in simgs ]}
 
@@ -107,12 +107,45 @@ async def generate(req: Request):
 
 @app.post("/api/generate-lang")
 async def generate_lang(req: Request):
-    """언어 전환: 같은 주제를 대상 언어(ko|ja|en)로 카드뉴스를 새로 생성."""
+    """언어 전환: 이미 생성된 카드를 대상 언어(ko|ja|en)로 '번역'한 뒤 같은 이미지로 재렌더.
+    재료를 다시 수집하지 않으므로 폴백(한국어 고정) 문제가 없다."""
     d = await req.json()
     lang = d.get("lang", "ko")
     if lang not in ("ko", "ja", "en"):
         lang = "ko"
-    return await run_in_threadpool(_generate_sync, d, lang)
+    return await run_in_threadpool(_relang_sync, d, lang)
+
+def _relang_sync(d, lang="ko"):
+    copy = d.get("copy") or {}
+    # 대상 언어로 카드 텍스트 번역 (ko면 원본 그대로)
+    if lang != "ko":
+        copy = llm.translate_copy(copy, lang)
+    sens   = d.get("sensitive", False)
+    title  = d.get("title", "") or "trend"
+    slug   = re.sub(r"[^a-z0-9]+"," ",title.lower())[:20].strip().replace(" ","-") + f"-{lang}"
+    bg_url = d.get("bg_url")
+    simg_urls = d.get("slide_imgs") or []
+    simgs  = [ (dict(url=u) if u else None) for u in simg_urls ]
+    paths  = render_carousel.render(copy, OUT, sensitive=sens, slug=slug,
+                                    bg_url=bg_url, slide_imgs=simgs, lang=lang)
+    urls   = ["/outputs/"+os.path.basename(p) for p in paths]
+    # 캡션 재조립 (번역된 caption + 언어별 출처 라벨)
+    src = d.get("src", "")
+    cap = (copy.get("caption") or "").strip()
+    if not cap:
+        cap = f"{copy.get('ko_title','')}".strip()
+    SRC_LABEL = {"ko": "📎 출처:", "ja": "📎 出典:", "en": "📎 Source:"}
+    SRC_NONE  = {"ko": "📎 출처 확인", "ja": "📎 出典を確認", "en": "📎 Source"}
+    label = SRC_LABEL.get(lang, SRC_LABEL["ko"])
+    source_line = f"{label} {src}" if src else SRC_NONE.get(lang, SRC_NONE["ko"])
+    LIMIT = 2200
+    room = LIMIT - len(source_line) - 2
+    if len(cap) > room:
+        cap = cap[:max(0, room)].rstrip()
+    caption = f"{cap}\n\n{source_line}"
+    return {"copy": copy, "images": urls, "caption": caption, "lang": lang, "src": src,
+            "img_credit": {"url": bg_url} if bg_url else None, "bg_url": bg_url,
+            "slide_imgs": simg_urls}
 
 # ── re-render (editor apply) ──────────────────────────────
 def _rerender_sync(t):

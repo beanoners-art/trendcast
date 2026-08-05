@@ -357,11 +357,12 @@ function langLabel(l){return {ko:"한국어",ja:"日本語",en:"English"}[l]||l;
 async function switchLang(d,it,lang,wrap){
   if(lang===(d.lang||"ko")) return;              // 같은 언어면 무시
   const box=wrap.parentNode; if(!box) return;
-  box.innerHTML='<div class="loading">'+langLabel(lang)+' 버전 생성 중… (10~20초)</div>';
+  box.innerHTML='<div class="loading">'+langLabel(lang)+' 버전 번역 중… (5~10초)</div>';
   try{
     const nd=await fetch("/api/generate-lang",{method:"POST",
       headers:{"Content-Type":"application/json"},
-      body:JSON.stringify({...it,lang})}).then(r=>r.json());
+      body:JSON.stringify({copy:d.copy, bg_url:d.bg_url, slide_imgs:d.slide_imgs,
+        src:d.src, title:it.title, sensitive:it.sensitive, lang})}).then(r=>r.json());
     box.innerHTML=""; box.appendChild(editorEl(nd,it));
   }catch(e){ box.innerHTML='<div class="note">오류: '+e+'</div>'; }
 }

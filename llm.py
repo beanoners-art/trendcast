@@ -188,6 +188,62 @@ def _fallback(material, sensitive):
     return {"ko_title": t, "why_ko": material.get("headline", ""),
             "caption": cap, "key_numbers": [], "slides": slides[:10], "_fallback": True}
 
+def translate_copy(copy, lang="ja"):
+    """이미 생성된 카드(copy: ko_title/caption/key_numbers/slides)를 대상 언어로 번역한다.
+    재생성이 아니라 번역이므로 재료가 없어도 폴백으로 새지 않는다. 실패 시 원본 반환."""
+    if lang == "ko":
+        return copy
+    key = os.environ.get("ANTHROPIC_API_KEY", "")
+    if not key:
+        return copy
+    lang_name = {"ja": "일본어(Japanese)", "en": "영어(English)"}.get(lang, "영어(English)")
+    # 번역할 최소 구조만 추림
+    payload = {
+        "ko_title": copy.get("ko_title", ""),
+        "caption": copy.get("caption", ""),
+        "key_numbers": copy.get("key_numbers", []),
+        "slides": [{"title": s.get("title", ""), "body": s.get("body", "")}
+                   for s in copy.get("slides", [])],
+    }
+    try:
+        from anthropic import Anthropic
+        client = Anthropic(api_key=key)
+        sysmsg = (
+            f"You are a professional translator. Translate the given card-news JSON into {lang_name}.\n"
+            f"RULES:\n"
+            f"- Translate ALL text values into {lang_name}: ko_title, caption, each slide's title and body, "
+            f"and each key_numbers label and delta.\n"
+            f"- Keep number VALUES (key_numbers.value) as-is (e.g. 2,510 / +1.2%). Translate only their label.\n"
+            f"- Preserve **bold** markers in slide body exactly (translate the words inside, keep the ** **).\n"
+            f"- Preserve the caption's hashtags but translate them into natural {lang_name} hashtags.\n"
+            f"- Keep the SAME JSON structure and keys. Output ONLY the JSON, no other text.")
+        user = json.dumps(payload, ensure_ascii=False)
+        msg = client.messages.create(model=MODEL(), max_tokens=5000,
+                                     system=sysmsg, messages=[{"role": "user", "content": user}])
+        txt = "".join(b.text for b in msg.content if b.type == "text")
+        data = _safe_json(txt)
+        if not data or not data.get("slides"):
+            print("[translate_copy] parse fail")
+            return copy
+        # 번역 결과를 원본에 병합 (img 등 원본 필드 유지)
+        new = dict(copy)
+        new["ko_title"] = data.get("ko_title", copy.get("ko_title", ""))
+        new["caption"]  = data.get("caption", copy.get("caption", ""))
+        if data.get("key_numbers"):
+            new["key_numbers"] = data["key_numbers"]
+        merged = []
+        orig_slides = copy.get("slides", [])
+        for i, s in enumerate(data["slides"]):
+            base = dict(orig_slides[i]) if i < len(orig_slides) else {}
+            base["title"] = s.get("title", base.get("title", ""))
+            base["body"]  = s.get("body", base.get("body", ""))
+            merged.append(base)
+        new["slides"] = merged
+        return new
+    except Exception as e:
+        print("[translate_copy] err", e)
+        return copy
+
 def localize(topic, material=None, sensitive=False, lang="ko"):
     material = material or {"title": topic.get("title", ""),
                             "headline": topic.get("headline", "")}
