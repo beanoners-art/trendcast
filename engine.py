@@ -402,21 +402,41 @@ def fetch_coffee_news_foreign(limit=10):
     print(f"[coffee] 해외 수집 {len(uniq)}건")
     return uniq[:limit]
 
+_coffee_tr_cache = {}   # {원문제목: {"title_ko":..,"headline_ko":..}} — 재번역 방지
+
 def _run_coffee(n=6):
     """'커피' 카테고리 — 해외(구글뉴스/GDELT)를 메인 베이스로, 국내(네이버·카카오)는 보조.
-    해외 기사는 제목을 한국어로 번역해 노출."""
-    frn = fetch_coffee_news_foreign()     # 영어 기사 (메인)
-    dom = fetch_coffee_news()             # 한국어 기사 (보조)
+    해외 기사는 제목을 한국어로 번역해 노출. 번역은 캐시해서 매번 재호출하지 않는다."""
+    frn = fetch_coffee_news_foreign(limit=n)   # 필요한 만큼만 (번역 부담↓)
+    dom = fetch_coffee_news()                  # 한국어 기사 (보조)
 
-    # 해외는 제목/요약 한국어 번역
+    # 해외 번역: 캐시에 있으면 재사용, 없는 것만 Claude로 번역
     if frn:
-        try:
-            frn = _claude_translate_titles(frn)
-        except Exception as e:
-            print("[coffee] 해외 번역 실패:", e)
-            for c in frn:
-                c.setdefault("title_ko", c["title"])
-                c.setdefault("headline_ko", c.get("headline", ""))
+        todo = []
+        for c in frn:
+            hit = _coffee_tr_cache.get(c["title"])
+            if hit:
+                c["title_ko"] = hit["title_ko"]
+                c["headline_ko"] = hit["headline_ko"]
+            else:
+                todo.append(c)
+        if todo:
+            try:
+                translated = _claude_translate_titles(todo)
+                for c in translated:
+                    _coffee_tr_cache[c["title"]] = {
+                        "title_ko": c.get("title_ko", c["title"]),
+                        "headline_ko": c.get("headline_ko", c.get("headline", "")),
+                    }
+            except Exception as e:
+                print("[coffee] 해외 번역 실패:", e)
+                for c in todo:
+                    c.setdefault("title_ko", c["title"])
+                    c.setdefault("headline_ko", c.get("headline", ""))
+        # 캐시 크기 제한 (메모리 보호)
+        if len(_coffee_tr_cache) > 300:
+            for k in list(_coffee_tr_cache)[:150]:
+                _coffee_tr_cache.pop(k, None)
     # 국내는 이미 한국어
     for c in dom:
         c.setdefault("title_ko", c["title"])
