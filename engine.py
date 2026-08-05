@@ -363,9 +363,36 @@ def fetch_coffee_news(per_kw=3):
     print(f"[coffee] 국내 수집 {len(items)}건")
     return items
 
-def fetch_coffee_news_foreign(limit=8):
-    """GDELT로 영문 커피 뉴스 수집 (원산지·시세·글로벌 트렌드·국제 이슈)."""
-    raw = fetch_gdelt(COFFEE_QUERY_EN)
+def fetch_google_news_rss(query, lang="en", n=12):
+    """구글 뉴스 RSS 검색 — 키리스·안정적. 해외(영문/일문) 뉴스 확보용."""
+    import urllib.parse as _u
+    hl, gl, ceid = ("en-US", "US", "US:en") if lang == "en" else ("ja", "JP", "JP:ja")
+    out = []
+    try:
+        url = (f"https://news.google.com/rss/search?q={_u.quote(query)}"
+               f"&hl={hl}&gl={gl}&ceid={ceid}")
+        r = requests.get(url, headers=UA, timeout=8)
+        root = ET.fromstring(r.content)
+        for it in root.findall(".//item")[:n]:
+            title = (it.findtext("title") or "").strip()
+            link  = (it.findtext("link") or "").strip()
+            srcel = it.find("source")
+            src_name = (srcel.text or "").strip() if srcel is not None else ""
+            if title:
+                out.append(dict(title=title, source="google_news", magnitude=1.0,
+                                headline=src_name, url=link, geo="global"))
+    except Exception as e:
+        print("[gnews] err", e)
+    return out
+
+def fetch_coffee_news_foreign(limit=10):
+    """해외(영문) 커피 뉴스 — 구글 뉴스 RSS 우선(안정), GDELT 백업.
+    원산지·시세·글로벌 트렌드·산업 커버."""
+    raw = fetch_google_news_rss(
+        "specialty coffee OR coffee price OR coffee production OR arabica OR coffee industry OR coffee origin",
+        lang="en", n=limit + 4)
+    if len(raw) < 3:                      # RSS가 부실하면 GDELT로 보강
+        raw += fetch_gdelt(COFFEE_QUERY_EN)
     seen, uniq = set(), []
     for it in raw:
         k = _key(it["title"])[:60]
@@ -376,15 +403,11 @@ def fetch_coffee_news_foreign(limit=8):
     return uniq[:limit]
 
 def _run_coffee(n=6):
-    """'커피' 카테고리 — 국내(네이버·카카오) + 해외(GDELT) 커피 뉴스를 섞어 반환.
+    """'커피' 카테고리 — 해외(구글뉴스/GDELT)를 메인 베이스로, 국내(네이버·카카오)는 보조.
     해외 기사는 제목을 한국어로 번역해 노출."""
-    dom = fetch_coffee_news()             # 한국어 기사
-    frn = fetch_coffee_news_foreign()     # 영어 기사
+    frn = fetch_coffee_news_foreign()     # 영어 기사 (메인)
+    dom = fetch_coffee_news()             # 한국어 기사 (보조)
 
-    # 국내는 이미 한국어
-    for c in dom:
-        c.setdefault("title_ko", c["title"])
-        c.setdefault("headline_ko", c.get("headline", ""))
     # 해외는 제목/요약 한국어 번역
     if frn:
         try:
@@ -394,27 +417,27 @@ def _run_coffee(n=6):
             for c in frn:
                 c.setdefault("title_ko", c["title"])
                 c.setdefault("headline_ko", c.get("headline", ""))
+    # 국내는 이미 한국어
+    for c in dom:
+        c.setdefault("title_ko", c["title"])
+        c.setdefault("headline_ko", c.get("headline", ""))
 
-    # 국내·해외 번갈아 인터리브 (둘 다 노출), 제목 중복 제거
-    from itertools import zip_longest
+    # 해외를 앞에(메인), 국내는 뒤에(보조) — 제목 중복 제거
     mixed, seen = [], set()
-    for a, b in zip_longest(dom, frn):
-        for it in (a, b):
-            if it is None:
-                continue
-            k = _key(it["title"])[:60]
-            if k and k not in seen:
-                seen.add(k)
-                mixed.append(it)
+    for it in frn + dom:
+        k = _key(it["title"])[:60]
+        if k and k not in seen:
+            seen.add(k)
+            mixed.append(it)
 
     out = []
     for rank, c in enumerate(mixed[:n], 1):
         blob = (c["title"] + " " + c.get("headline", "")).lower()
         sensitive = any(k in blob for k in SENSITIVE)
         src = c.get("source", "")
-        is_foreign = (src == "gdelt")
+        is_foreign = src in ("gdelt", "google_news")
         src_ko = {"naver_news": "네이버 뉴스", "kakao_news": "카카오 뉴스",
-                  "gdelt": "해외 뉴스"}.get(src, src)
+                  "gdelt": "해외 뉴스", "google_news": "해외 뉴스"}.get(src, src)
         out.append(dict(
             rank=rank, title=c["title"],
             title_ko=c.get("title_ko", c["title"]),
@@ -426,6 +449,7 @@ def _run_coffee(n=6):
             final=round(50 - rank, 1), velocity=None,
             sources=[src] if src else ["naver_news"],
             geo=c.get("geo", "KR"),
+            wiki_lang=("en" if is_foreign else "ko"),
             why=f"{src_ko} · 커피 키워드 검색" + (" · 해외" if is_foreign else ""),
         ))
     return out

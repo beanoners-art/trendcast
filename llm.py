@@ -101,20 +101,24 @@ def _anthropic(material, sensitive, lang="ko"):
         client = Anthropic(api_key=key)
         lang_name = {"ko": "한국어(Korean)", "ja": "일본어(Japanese)",
                      "en": "영어(English)"}.get(lang, "한국어(Korean)")
-        lang_directive = ""
+        sys_prompt = SYS
         if lang != "ko":
-            lang_directive = (
-                f"\n\n[OUTPUT LANGUAGE — 최우선] 모든 카드 텍스트를 반드시 {lang_name}로만 작성하라. "
-                f"대상: 각 슬라이드의 title/body, caption(해시태그 포함), key_numbers의 label과 delta. "
-                f"JSON 키 이름(ko_title, why_ko, caption, key_numbers, slides 등)은 그대로 두고 '값'만 "
-                f"{lang_name}로 쓴다. ko_title 값에도 {lang_name} 제목을 넣는다. "
-                f"한국어를 섞지 말고 완전히 {lang_name}로 작성하라. 인물·기관 고유명사는 {lang_name} 표기 관례를 따른다.")
+            # 언어 지시를 시스템 프롬프트 '맨 앞'에 강하게 박아서 무시 못 하게 함
+            sys_prompt = (
+                f"[ABSOLUTE OUTPUT LANGUAGE RULE — HIGHEST PRIORITY]\n"
+                f"Write EVERY text value in {lang_name} ONLY. This includes each slide's "
+                f"title and body, the caption (with hashtags), and every key_numbers label and delta. "
+                f"Do NOT use Korean anywhere in the values. Keep JSON key names in English as given. "
+                f"Even though the material and the instructions below are in Korean, your OUTPUT VALUES "
+                f"must be entirely in {lang_name}. Translate/adapt the facts from the material into "
+                f"natural {lang_name}. This rule overrides any language implied elsewhere.\n\n" + SYS)
         user = (f"[재료]\n{_material_text(material)[:9000]}\n\n"
                 f"[민감 주제] {sensitive}\n"
-                f"위 재료로 에디토리얼 카드뉴스와 인스타 캡션을 만들어라. 구체적 사실을 최대한 살려라."
-                f"{lang_directive}")
+                f"위 재료로 에디토리얼 카드뉴스와 인스타 캡션을 만들어라. 구체적 사실을 최대한 살려라.")
+        if lang != "ko":
+            user += f"\n\n[REMINDER] Output ALL text values in {lang_name} only. No Korean."
         msg = client.messages.create(model=MODEL(), max_tokens=6000,
-                                     system=SYS, messages=[{"role": "user", "content": user}])
+                                     system=sys_prompt, messages=[{"role": "user", "content": user}])
         txt = "".join(b.text for b in msg.content if b.type == "text")
         data = _safe_json(txt)
         if data and data.get("slides") and isinstance(data["slides"][0], dict):
